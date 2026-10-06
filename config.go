@@ -117,6 +117,19 @@ const (
 	AuthAnthropic AuthStyle = "anthropic"
 )
 
+// UpstreamKind is how an upstream is reached.
+type UpstreamKind string
+
+const (
+	// UpstreamHTTP posts to BaseURL over HTTP using an API key. The default.
+	UpstreamHTTP UpstreamKind = "http"
+	// UpstreamCLI runs a local command and reads its output. This exists so a
+	// subscription-backed agent CLI can be used without the router ever holding
+	// its credentials: the command runs under the operator's own login and owns
+	// its own token store, and the router only sees the text it prints.
+	UpstreamCLI UpstreamKind = "cli"
+)
+
 // defaultAnthropicVersion is the API version header Claude expects. It is
 // applied only when the upstream config does not set one itself.
 const defaultAnthropicVersion = "2023-06-01"
@@ -138,6 +151,27 @@ type Upstream struct {
 	BodyDrop []string `yaml:"bodyDrop"`
 	// MaxConcurrency caps in-flight requests. Full targets are skipped, not queued.
 	MaxConcurrency int `yaml:"maxConcurrency"`
+
+	// Kind selects how this upstream is reached: "http" (the default) posts to
+	// BaseURL, "cli" runs Command as a local subprocess.
+	Kind UpstreamKind `yaml:"kind"`
+	// Command is the argv for a cli upstream, for example
+	// ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose",
+	// "--include-partial-messages"]. It must contain "{prompt}" exactly once;
+	// that element is replaced with the rendered conversation. The command must
+	// print Claude Code's stream-json NDJSON on stdout.
+	Command []string `yaml:"command"`
+	// Timeout bounds one cli invocation. Defaults to maxStreamDuration.
+	Timeout Duration `yaml:"timeout"`
+}
+
+// kind reports how the upstream is reached, defaulting to HTTP so that an
+// existing config needs no change.
+func (u Upstream) kind() UpstreamKind {
+	if u.Kind == "" {
+		return UpstreamHTTP
+	}
+	return u.Kind
 }
 
 type Alias struct {
@@ -274,11 +308,40 @@ func (c *Config) validate() error {
 			add("upstream name must not be empty")
 			continue
 		}
-		if u.BaseURL == "" {
+		if u.BaseURL == "" && u.kind() == UpstreamHTTP {
 			add("upstream %q: baseUrl is required", name)
 		}
 		if u.APIKey != "" && u.APIKeyEnv != "" {
 			add("upstream %q: set apiKey or apiKeyEnv, not both", name)
+		}
+		switch u.kind() {
+		case UpstreamHTTP:
+			if len(u.Command) > 0 {
+				add("upstream %q: command is only meaningful for a cli upstream", name)
+			}
+		case UpstreamCLI:
+			if u.BaseURL != "" {
+				add("upstream %q: baseUrl is not used by a cli upstream", name)
+			}
+			if len(u.Command) == 0 {
+				add("upstream %q: command is required for a cli upstream", name)
+			} else {
+				placeholders := 0
+				for _, arg := range u.Command {
+					placeholders += strings.Count(arg, "{prompt}")
+				}
+				if placeholders != 1 {
+					add("upstream %q: command must contain exactly one {prompt} placeholder, found %d", name, placeholders)
+				}
+			}
+			// The whole point of a cli upstream is that the command already owns
+			// a credential; giving it one too would be a contradiction, and the
+			// router must never hold a subscription token.
+			if u.APIKey != "" || u.APIKeyEnv != "" {
+				add("upstream %q: a cli upstream manages its own credentials; drop apiKey and apiKeyEnv", name)
+			}
+		default:
+			add("upstream %q: unknown kind %q (want %q or %q)", name, u.Kind, UpstreamHTTP, UpstreamCLI)
 		}
 		switch u.AuthStyle {
 		case AuthBearer, AuthAnthropic:
@@ -325,6 +388,11 @@ func (c *Config) validate() error {
 				} else if !translatable(a.API, t.API) {
 					add("model %q target %d: no translation from client %s to upstream %s", name, i, a.API, t.API)
 				}
+			}
+			// A cli upstream yields text and nothing else, so there is no
+			// renderer for a Responses-API client to consume.
+			if up, ok := c.Upstreams[t.Upstream]; ok && up.kind() == UpstreamCLI && a.API == APIOpenAIResponses {
+				add("model %q target %d: a cli upstream cannot serve an openai-responses client", name, i)
 			}
 			// A patch on "model" would be silently undone by the router's own
 			// rewrite, and it reads as if it selects a model. Point at the

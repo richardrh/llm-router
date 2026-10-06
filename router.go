@@ -50,6 +50,13 @@ func NewRouter(cfg *Config, log *slog.Logger) (*Router, error) {
 		sticky:    make(map[string]*stickyEntry),
 	}
 	for name, u := range cfg.Upstreams {
+		// A cli upstream holds no credential of its own: the command runs under
+		// the operator's login and owns its own token store. Resolving a key for
+		// it would be the very intermediation this design avoids.
+		if u.kind() == UpstreamCLI {
+			r.upstreams[name] = newUpstreamState(name, u, "", cfg.Defaults.BreakerFailures)
+			continue
+		}
 		key := u.APIKey
 		if u.APIKeyEnv != "" {
 			key = strings.TrimSpace(os.Getenv(u.APIKeyEnv))

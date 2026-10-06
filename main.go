@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -49,6 +50,11 @@ func run() error {
 	if *checkOnly {
 		for _, name := range cfg.upstreamsInOrder() {
 			u := cfg.Upstreams[name]
+			if u.kind() == UpstreamCLI {
+				// No credential to report: the command owns it.
+				log.Info("upstream ok", "name", name, "kind", "cli", "command", strings.Join(u.Command, " "))
+				continue
+			}
 			state := "env:" + u.APIKeyEnv
 			if u.APIKey != "" {
 				state = "literal"
@@ -56,7 +62,7 @@ func run() error {
 			if u.APIKeyEnv != "" && os.Getenv(u.APIKeyEnv) == "" {
 				state += " (UNSET)"
 			}
-			log.Info("upstream ok", "name", name, "baseUrl", u.BaseURL, "credential", state)
+			log.Info("upstream ok", "name", name, "kind", "http", "baseUrl", u.BaseURL, "credential", state)
 		}
 		for _, name := range sortedModelNames(cfg) {
 			a := cfg.Models[name]

@@ -78,6 +78,28 @@ upstreams:
     # ride along. Each target adds back what Claude needs; see the targets below.
     bodyDrop: [provider, transforms, models, route, usage, reasoning]
 
+  # A second kind of upstream, reached by running a local command rather than by
+  # calling an HTTP endpoint. This is how a subscription can back an alias
+  # without an API key.
+  #
+  # The command runs under your own login and owns its own credential store, so
+  # nothing here reads a token: the router shells out to the unmodified Claude
+  # Code binary, which Anthropic's policy permits, rather than intermediating its
+  # credentials, which it forbids. A cli upstream is refused at load if it carries
+  # an apiKey, because there is nothing to give it.
+  #
+  # The command must print Claude Code's `--output-format stream-json` NDJSON on
+  # stdout, and must contain "{prompt}" exactly once. Leave --bare out: it skips
+  # the subscription login and demands an API key instead, which defeats the
+  # point here.
+  #
+  #   claude-code:
+  #     kind: cli
+  #     command: [claude, -p, "{prompt}", --output-format, stream-json,
+  #               --verbose, --include-partial-messages]
+  #     maxConcurrency: 2      # each request is a process; keep this small
+  #     timeout: 10m
+
 models:
   # --------------------------------------------------------------- Claude ----
   # Alias names match OpenRouter's, so an OpenRouter client needs no edits.
@@ -219,6 +241,20 @@ models:
 #
 # Only these two pairs are bridged. Any other combination is refused at startup
 # rather than half-supported.
+
+# An alias served by the Claude Code binary rather than by an API. Same shape as
+# any other alias: only the target's upstream differs, so a client cannot tell.
+# The conversation is flattened into a single prompt, because a CLI agent has its
+# own turn structure and its own tools — client-supplied tools are dropped.
+#
+#   claude-via-subscription:
+#     api: openai-completions
+#     contextWindow: 1000000
+#     maxOutputTokens: 128000
+#     targets:
+#       - upstream: claude-code
+#         model: claude-opus-5-5
+#         weight: 1
 
 # Picking a version is just a target's `model` string, so all of these work
 # without any router change — add a target, or a whole alias, per variant:

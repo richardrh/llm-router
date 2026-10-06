@@ -111,6 +111,10 @@ type attemptOutcome struct {
 	// invented for a response that carried no counts.
 	usage    Usage
 	hasUsage bool
+	// costUSD is a cost the upstream reported directly, as a CLI-backed agent
+	// does. When set it is used in place of the router's own estimate.
+	costUSD float64
+	hasCost bool
 }
 
 func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api APIProtocol) {
@@ -264,9 +268,17 @@ func (s *Server) finishLog(logger *slog.Logger, aliasName string, c candidate, o
 			"input_tokens", outcome.usage.InputTokens,
 			"output_tokens", outcome.usage.OutputTokens,
 			"cache_read_tokens", outcome.usage.CacheReadTokens,
-			"cache_write_tokens", outcome.usage.CacheWriteTokens,
-			"cost_usd", s.cfg.Models[aliasName].Cost.Estimate(outcome.usage))
-	} else {
+			"cache_write_tokens", outcome.usage.CacheWriteTokens)
+	}
+	switch {
+	case outcome.hasCost:
+		// A CLI-backed agent reports what it actually spent, which beats any
+		// estimate the router could make, so it is used as given.
+		attrs = append(attrs, "cost_usd", outcome.costUSD, "cost_source", "reported")
+	case outcome.hasUsage:
+		attrs = append(attrs, "cost_usd",
+			s.cfg.Models[aliasName].Cost.Estimate(outcome.usage), "cost_source", "estimated")
+	default:
 		// No counts were reported, so no cost is claimed. An invented figure
 		// would be worse than an absent one.
 		attrs = append(attrs, "usage", "unreported")
@@ -291,6 +303,12 @@ func (s *Server) attempt(
 	c candidate,
 	logger *slog.Logger,
 ) (*http.Response, attemptOutcome, error) {
+	// A cli upstream is reached by running a command rather than by posting to a
+	// URL, so it takes its own path from here.
+	if c.upstream.cfg.kind() == UpstreamCLI {
+		return s.attemptCLI(r.Context(), w, plan, c, logger)
+	}
+
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 

@@ -72,36 +72,52 @@ X-Router-Upstream-Model: anthropic/claude-opus-5.5
 
 ### Credentials
 
-Upstreams authenticate with **API keys**, taken from the environment
-(`apiKeyEnv`) or a literal in the config. That is the only credential type this
-router supports, deliberately.
+An **http** upstream authenticates with an API key, taken from the environment
+(`apiKeyEnv`) or a literal in the config. A **cli** upstream (`kind: cli`) has no
+credential at all: it runs a local command that manages its own login.
 
-**Claude Code and Codex subscriptions are not usable here.** Their OAuth tokens
-belong to their own clients, and replaying them from a proxy is both prohibited
-and fragile:
+**Subscriptions cannot be replayed from a proxy, but they can be used through
+one.** The distinction matters.
 
 - Anthropic's [Claude Code
   policy](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)
   states that developers "may not collect, store, or intermediate Claude.ai
-  credentials or session tokens" — which is exactly what a proxy does — and that
-  sign-in "must complete through Anthropic's own flow". It reserves the right to
-  enforce this without notice.
-- OpenAI's [Codex auth
-  guide](https://developers.openai.com/codex/auth/ci-cd-auth) says to keep auth
-  working by running Codex, "without calling the OAuth token endpoint yourself",
-  and excludes "generic OAuth clients outside Codex", recommending API keys for
-  automation. The ChatGPT backend it targets is undocumented.
+  credentials or session tokens", and that sign-in "must complete through
+  Anthropic's own flow". A proxy holding your OAuth token does exactly the
+  forbidden thing — and would additionally have to impersonate the CLI
+  (`user-agent: claude-cli/…`, `x-app: cli`, the `You are Claude Code…` system
+  prompt), because the API rejects those tokens without it.
+- The same policy expressly does **not** prevent "an end user signing in to the
+  unmodified Claude Code binary with their own Claude subscription".
 
-Both backends also gate on headers that identify the official clients
-(`user-agent: claude-cli/…`, `x-app: cli`, `originator`, `chatgpt-account-id`),
-so a proxy would have to impersonate them as well as hold their credentials.
+So the router supports the second shape and refuses the first. Point a
+`kind: cli` upstream at the real binary: it runs under your login, and the router
+sees only its stdout — never a token, a credential file, or a keychain entry. A
+cli upstream carrying an `apiKey` is rejected at load, because there is nothing
+to give it.
 
-Use an [OpenRouter](https://openrouter.ai/keys) key for the one-endpoint,
-many-provider case, or an Anthropic Console key for Claude direct. Subscriptions
-keep working in `claude` and `codex` themselves; the two are complementary, not
-interchangeable. Note that Codex CLI accepts custom model providers
-(`model_providers` in `~/.codex/config.toml`), so it *can* be pointed at this
-router — with an API key for the router's upstreams.
+```yaml
+upstreams:
+  claude-code:
+    kind: cli
+    command: [claude, -p, "{prompt}", --output-format, stream-json,
+              --verbose, --include-partial-messages]
+    maxConcurrency: 2      # each request is a process; keep this small
+```
+
+Leave `--bare` out: it skips the subscription login and demands an API key, which
+defeats the point. `codex exec` follows the same pattern for the OpenAI
+subscription, though Pi already supports that natively via `/login openai-codex`.
+
+**Be honest about what this is.** A CLI upstream spawns a process per request,
+and `claude -p` is an *agent loop with its own tools*, not a chat model. The
+conversation is flattened into a single prompt, client-supplied tools are
+dropped, and every call pays the CLI's startup cost. It reaches a subscription;
+it does not make a subscription equivalent to a completion API.
+
+For an ordinary completion API, use an [OpenRouter](https://openrouter.ai/keys)
+key for the one-endpoint many-provider case, or an Anthropic Console key for
+Claude direct.
 
 ## Pointing clients at it
 
@@ -151,6 +167,9 @@ knowing:
 | `defaults.*` | Retry budget, timeouts, sticky affinity, breaker thresholds. |
 | `upstreams.<name>.baseUrl` | Provider root; the protocol's path is appended. |
 | `upstreams.<name>.apiKeyEnv` | Env var holding the key. Preferred over `apiKey`. |
+| `upstreams.<name>.kind` | `http` (the default) or `cli`. |
+| `upstreams.<name>.command` | argv for a `cli` upstream; must contain `{prompt}` exactly once. |
+| `upstreams.<name>.timeout` | Bounds one `cli` invocation. Defaults to `maxStreamDuration`. |
 | `upstreams.<name>.authStyle` | `bearer` (the default) or `anthropic`. |
 | `upstreams.<name>.headers` | Extra headers per upstream, overriding the client's. |
 | `upstreams.<name>.bodyDrop` | Top-level JSON fields removed before dispatch. |
@@ -427,4 +446,8 @@ warmth tracking, TTL expiry, returning a conversation to the warm target over a
 directions (system hoisting, role coalescing, tool-call and tool-choice mapping,
 `max_tokens` defaulting, reasoning controls, response and usage mapping,
 fragmentation-invariant streaming, and refusal of untranslatable pairs at load),
-and the YAML-on-disk path through `LoadConfig`.
+CLI-backed upstreams (prompt rendering from either content form, `{prompt}`
+substitution and its error cases, incremental deltas from a real subprocess,
+reported cost and usage, stderr surfaced on failure, context cancellation, plus
+serving both wires through a command and refusing an `apiKey` on one), and the
+YAML-on-disk path through `LoadConfig`.
