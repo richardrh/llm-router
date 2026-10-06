@@ -1,0 +1,231 @@
+# omp-router — one endpoint in front of several providers, speaking OpenRouter's
+# wire format to the client and its own to each upstream.
+#
+# This config serves Claude from two places at once:
+#   * OpenRouter                      https://openrouter.ai/api/v1
+#   * the Claude API, direct          https://api.anthropic.com/v1
+#
+# Clients connect exactly as they would to OpenRouter. Point the base URL at
+# http://127.0.0.1:8787/api/v1 and keep the OpenRouter model strings
+# ("anthropic/claude-opus-5.5"). The alias names below are those strings, so a
+# client needs no other change: same paths, same auth header, same model ids.
+#
+# Credentials come from the environment; no secret is stored in this file.
+#   export OPENROUTER_API_KEY=sk-or-...
+#   export ANTHROPIC_API_KEY=sk-ant-...
+#
+# Validate without starting:  ./omp-router -check
+
+listen: 127.0.0.1:8787
+
+# Shared key clients must present. Empty accepts any key, which is only
+# reasonable while bound to loopback.
+apiKey: ""
+
+defaults:
+  # Upstream dispatches per client request before giving up.
+  maxAttempts: 3
+  # Pin a session to one target so provider-side prompt caches keep hitting.
+  sticky: true
+  # Desktop agents send no session header, so derive affinity from the
+  # conversation's opening turn instead.
+  stickyByPrefix: true
+  firstByteTimeout: 120s
+  streamIdleTimeout: 180s
+  maxStreamDuration: 45m
+  maxBodyBytes: 33554432
+  breakerFailures: 4
+  breakerCooldown: 30s
+  rateLimitCooldown: 20s
+  # Report the alias, not the upstream's internal id, in responses.
+  rewriteModel: true
+  # Ask OpenAI-wire upstreams for usage on streaming responses. Never applied
+  # to the Anthropic Messages wire, which has no such field.
+  injectStreamUsage: true
+  # Prefer whichever upstream already holds this conversation's cached prefix,
+  # learned from the cache reads providers report. It only decides what a
+  # session pin would otherwise decide blindly, so it never overrides a pin.
+  cacheAffinity: true
+  # How long an observation stays valid. Providers expire their prompt caches,
+  # and routing to an expired one costs a cache write instead of saving one.
+  cacheAffinityTTL: 5m
+
+upstreams:
+  openrouter:
+    baseUrl: https://openrouter.ai/api/v1
+    apiKeyEnv: OPENROUTER_API_KEY
+    maxConcurrency: 8
+    headers:
+      HTTP-Referer: https://github.com/local/omp-router
+      X-Title: omp-router
+
+  # The Claude API, direct.
+  #
+  # authStyle: anthropic sends x-api-key plus an anthropic-version header.
+  # Claude's native /v1/messages reads the former and requires the latter;
+  # OpenRouter wants neither, which is why the style is per upstream.
+  #
+  # One base URL serves both wires: Claude exposes /v1/messages natively and an
+  # OpenAI-compatible /v1/chat/completions, so a single upstream can back client
+  # aliases of either protocol.
+  anthropic:
+    baseUrl: https://api.anthropic.com/v1
+    apiKeyEnv: ANTHROPIC_API_KEY
+    authStyle: anthropic
+    maxConcurrency: 8
+    # Dropped before dispatch. Anthropic rejects unknown top-level parameters
+    # outright, so a field another provider's vocabulary introduced must not
+    # ride along. Each target adds back what Claude needs; see the targets below.
+    bodyDrop: [provider, transforms, models, route, usage, reasoning]
+
+models:
+  # --------------------------------------------------------------- Claude ----
+  # Alias names match OpenRouter's, so an OpenRouter client needs no edits.
+  #
+  # OpenRouter carries the traffic and Anthropic is weight 0, meaning
+  # failover-only. The reason is prompt caching: OpenRouter caches Claude
+  # prompts, and a coding agent re-sends a growing transcript on every turn, so
+  # serving that from OpenRouter is materially cheaper and faster. Set the
+  # anthropic target's weight to 1 to split traffic, or invert the weights to
+  # prefer Claude direct.
+  #
+  # The anthropic targets below name the native wire, so the router translates.
+  # That avoids depending on Claude's OpenAI-compatibility layer — which
+  # Anthropic documents as not production-ready — and lets each bodyPatch speak
+  # Claude's own vocabulary rather than an OpenAI approximation of it.
+
+  anthropic/claude-opus-5.5:
+    api: openai-completions
+    contextWindow: 1000000
+    maxOutputTokens: 128000
+    cost: { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 5 }
+    targets:
+      - upstream: openrouter
+        model: anthropic/claude-opus-5.5
+        weight: 1
+        bodyPatch:
+          # OpenRouter normalises reasoning controls across providers.
+          reasoning: { effort: high }
+          # Which of OpenRouter's upstream providers may serve this. `order` is a
+          # preference; drop allow_fallbacks to false to make it a hard pin.
+          provider:
+            order: [anthropic]
+            allow_fallbacks: true
+            # require_parameters: true  # only providers honouring every field above
+            # sort: throughput         # or price / latency; disables load balancing
+            # data_collection: deny    # or zdr: true for zero-retention endpoints
+      - upstream: anthropic
+        model: claude-opus-5-5
+        weight: 0
+        # api names the wire the upstream speaks. It differs from this alias's
+        # openai-completions, so the router translates the request out and the
+        # response back — how an OpenAI-shaped client reaches Claude's native
+        # endpoint rather than its compatibility layer.
+        api: anthropic-messages
+        bodyPatch:
+          # Claude's own vocabulary. On Opus 5.5 thinking is always on and
+          # adaptive; `display` is what makes the summary visible, and
+          # `{type: enabled, budget_tokens}` would be a 400.
+          thinking: { type: adaptive, display: summarized }
+          # output_config:
+          #   effort: xhigh   # max | xhigh | high | medium | low; Opus 5.5 defaults to medium
+
+  anthropic/claude-sonnet-5.5:
+    api: openai-completions
+    contextWindow: 1000000
+    maxOutputTokens: 128000
+    cost: { input: 2, output: 10, cacheRead: 0.20, cacheWrite: 2.50 }
+    targets:
+      - upstream: openrouter
+        model: anthropic/claude-sonnet-5.5
+        weight: 1
+        bodyPatch:
+          reasoning: { effort: medium }
+          provider:
+            order: [anthropic]
+            allow_fallbacks: true
+      - upstream: anthropic
+        model: claude-sonnet-5-5
+        weight: 0
+        api: anthropic-messages
+        bodyPatch:
+          thinking: { type: adaptive, display: summarized }
+
+  anthropic/claude-haiku-4.5:
+    api: openai-completions
+    contextWindow: 200000
+    maxOutputTokens: 64000
+    cost: { input: 1, output: 5, cacheRead: 0.10, cacheWrite: 1.25 }
+    targets:
+      - upstream: openrouter
+        model: anthropic/claude-haiku-4.5
+        weight: 1
+        bodyPatch:
+          reasoning: { effort: low }
+      - upstream: anthropic
+        model: claude-haiku-4-5
+        weight: 0
+        api: anthropic-messages
+        bodyPatch:
+          # Version-dependent, and worth seeing side by side with the models
+          # above: Haiku 4.5 rejects `adaptive` with a 400 and takes the older
+          # explicit form instead. budget_tokens must be under max_tokens.
+          thinking: { type: enabled, budget_tokens: 4096 }
+
+  # Anthropic-wire clients (Claude Code, the Anthropic SDKs) ask for these bare
+  # ids and send x-api-key. They go straight to Claude's native /v1/messages,
+  # where prompt caching, effort and thinking behave properly. Point such a
+  # client at ANTHROPIC_BASE_URL=http://127.0.0.1:8787.
+  claude-opus-5-5:
+    api: anthropic-messages
+    contextWindow: 1000000
+    maxOutputTokens: 128000
+    cost: { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 5 }
+    targets:
+      - upstream: anthropic
+        model: claude-opus-5-5
+        weight: 1
+        bodyPatch:
+          thinking: { type: adaptive, display: summarized }
+          output_config: { effort: xhigh }
+
+  claude-sonnet-5-5:
+    api: anthropic-messages
+    contextWindow: 1000000
+    maxOutputTokens: 128000
+    cost: { input: 2, output: 10, cacheRead: 0.20, cacheWrite: 2.50 }
+    targets:
+      - upstream: anthropic
+        model: claude-sonnet-5-5
+        weight: 1
+        bodyPatch:
+          thinking: { type: adaptive, display: summarized }
+          output_config: { effort: high }
+
+# The reverse direction works too: an Anthropic-wire client (Claude Code, the
+# Anthropic SDKs) can be served by OpenRouter. Give the alias the Anthropic
+# protocol, let its target speak OpenAI, and the router translates the other way:
+#
+#   claude-code-via-openrouter:
+#     api: anthropic-messages
+#     contextWindow: 1000000
+#     maxOutputTokens: 128000
+#     cost: { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 5 }
+#     targets:
+#       - upstream: openrouter
+#         model: anthropic/claude-opus-5.5
+#         weight: 1
+#         api: openai-completions
+#
+# Only these two pairs are bridged. Any other combination is refused at startup
+# rather than half-supported.
+
+# Picking a version is just a target's `model` string, so all of these work
+# without any router change — add a target, or a whole alias, per variant:
+#
+#   anthropic/claude-opus-5.5         pinned OpenRouter slug
+#   anthropic/claude-opus-5.5:nitro   same model, OpenRouter sorts for throughput
+#   anthropic/claude-opus-5.5:floor   same model, sorted for price
+#   ~anthropic/claude-opus-latest     OpenRouter's floating alias
+#   claude-opus-5-5                   the Claude API's own id
+#   claude-haiku-4-5-20251001         a dated Claude snapshot, pinned for good

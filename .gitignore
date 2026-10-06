@@ -1,0 +1,16 @@
+# Built binary
+/omp-router
+
+# Go build and test artefacts
+*.test
+*.out
+/coverage.txt
+
+# Anything holding provider credentials
+.env
+.env.*
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/

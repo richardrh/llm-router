@@ -1,0 +1,484 @@
+{
+  "claude-fable-5": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "midConversationSystem": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "thinkingAlwaysOn": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 1.0,
+      "cacheWrite": 12.5,
+      "input": 10.0,
+      "output": 50.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-fable-5-1": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "midConversationSystem": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "thinkingAlwaysOn": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 0.25,
+      "cacheWrite": 12.5,
+      "input": 10.0,
+      "output": 50.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-haiku-4-5": {
+    "capabilities": {
+      "computerUse": true,
+      "functionCalling": true,
+      "nativeStructuredOutput": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "cost": {
+      "cacheRead": 0.1,
+      "cacheWrite": 1.25,
+      "input": 1.0,
+      "output": 5.0
+    },
+    "maxInputTokens": 200000,
+    "maxOutputTokens": 64000
+  },
+  "claude-haiku-4-5-20251001": {
+    "capabilities": {
+      "computerUse": true,
+      "functionCalling": true,
+      "nativeStructuredOutput": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "cost": {
+      "cacheRead": 0.1,
+      "cacheWrite": 1.25,
+      "input": 1.0,
+      "output": 5.0
+    },
+    "maxInputTokens": 200000,
+    "maxOutputTokens": 64000
+  },
+  "claude-mythos-5": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "midConversationSystem": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "thinkingAlwaysOn": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 1.0,
+      "cacheWrite": 12.5,
+      "input": 10.0,
+      "output": 50.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-mythos-5-1": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "midConversationSystem": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "thinkingAlwaysOn": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 0.25,
+      "cacheWrite": 12.5,
+      "input": 10.0,
+      "output": 50.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-mythos-preview": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "thinkingAlwaysOn": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 1.0,
+      "cacheWrite": 12.5,
+      "input": 10.0,
+      "output": 50.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-opus-4-5": {
+    "capabilities": {
+      "computerUse": true,
+      "functionCalling": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "cost": {
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "input": 5.0,
+      "output": 25.0
+    },
+    "maxInputTokens": 200000,
+    "maxOutputTokens": 64000
+  },
+  "claude-opus-4-5-20251101": {
+    "capabilities": {
+      "computerUse": true,
+      "functionCalling": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "cost": {
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "input": 5.0,
+      "output": 25.0
+    },
+    "maxInputTokens": 200000,
+    "maxOutputTokens": 64000
+  },
+  "claude-opus-4-6": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "legacyThinking": true,
+      "maxEffort": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "cost": {
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "input": 5.0,
+      "output": 25.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-opus-4-6-20260205": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "legacyThinking": true,
+      "maxEffort": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "cost": {
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "input": 5.0,
+      "output": 25.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-opus-4-7": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "input": 5.0,
+      "output": 25.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-opus-4-7-20260416": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "input": 5.0,
+      "output": 25.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-opus-4-8": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "fastMode": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "midConversationSystem": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "input": 5.0,
+      "output": 25.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-opus-5": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "fastMode": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "midConversationSystem": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "input": 5.0,
+      "output": 25.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-opus-5-5": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "fastMode": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "midConversationSystem": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "thinkingAlwaysOn": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 0.2,
+      "cacheWrite": 5.0,
+      "input": 4.0,
+      "output": 20.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-sonnet-4-5": {
+    "capabilities": {
+      "computerUse": true,
+      "functionCalling": true,
+      "nativeStructuredOutput": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "cost": {
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75,
+      "input": 3.0,
+      "output": 15.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 64000
+  },
+  "claude-sonnet-4-5-20250929": {
+    "capabilities": {
+      "computerUse": true,
+      "functionCalling": true,
+      "nativeStructuredOutput": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true,
+      "webSearch": true
+    },
+    "cost": {
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75,
+      "input": 3.0,
+      "output": 15.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 64000
+  },
+  "claude-sonnet-4-6": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "legacyThinking": true,
+      "maxEffort": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "cost": {
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75,
+      "input": 3.0,
+      "output": 15.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-sonnet-5": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "midConversationSystem": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "vision": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 0.2,
+      "cacheWrite": 2.5,
+      "input": 2.0,
+      "output": 10.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  },
+  "claude-sonnet-5-5": {
+    "capabilities": {
+      "adaptiveThinking": true,
+      "computerUse": true,
+      "functionCalling": true,
+      "maxEffort": true,
+      "midConversationSystem": true,
+      "nativeStructuredOutput": true,
+      "outputConfig": true,
+      "pdfInput": true,
+      "promptCaching": true,
+      "reasoning": true,
+      "thinkingAlwaysOn": true,
+      "vision": true,
+      "webSearch": true,
+      "xhighEffort": true
+    },
+    "cost": {
+      "cacheRead": 0.2,
+      "cacheWrite": 2.5,
+      "input": 2.0,
+      "output": 10.0
+    },
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000
+  }
+}
