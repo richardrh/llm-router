@@ -220,7 +220,7 @@ func newTestServerLogging(t *testing.T, ups map[string]*fakeUpstream, weights ma
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
-	return NewServer(cfg, r, log), &logs
+	return NewServer(cfg, r, log, nil), &logs
 }
 
 func post(t *testing.T, srv *Server, path string, body map[string]any, headers map[string]string) *http.Response {
@@ -830,7 +830,7 @@ func TestLoadedConfigServesRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
-	srv := NewServer(cfg, r, log)
+	srv := NewServer(cfg, r, log, nil)
 
 	res := post(t, srv, "/v1/chat/completions", map[string]any{
 		"model": "alias-one", "messages": []any{map[string]any{"role": "user", "content": "hi"}},

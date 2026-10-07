@@ -43,7 +43,7 @@ multi-tenant gateway or an Enterprise-gated one to get one feature.
 ## Quick start
 
 ```bash
-go build -o omp-router .
+go build -o omp-router .                   # requires Go 1.26 or newer
 export OPENROUTER_API_KEY=sk-or-...        # at least one provider
 export ANTHROPIC_API_KEY=sk-ant-...
 
@@ -165,6 +165,8 @@ knowing:
 | `listen` | Bind address. Loopback by default. |
 | `apiKey` | Shared secret clients must present. `""` accepts any. |
 | `defaults.*` | Retry budget, timeouts, sticky affinity, breaker thresholds. |
+| `store.path` | SQLite file for usage history. Empty keeps no history. |
+| `store.queueSize` | Records waiting to be written before they are dropped. |
 | `upstreams.<name>.baseUrl` | Provider root; the protocol's path is appended. |
 | `upstreams.<name>.apiKeyEnv` | Env var holding the key. Preferred over `apiKey`. |
 | `upstreams.<name>.kind` | `http` (the default) or `cli`. |
@@ -322,6 +324,63 @@ Streaming is translated incrementally with no whole-stream buffering, and the
 usage observer still reads the upstream's own events — so accounting works
 identically whether or not the wire changed.
 
+## Usage history
+
+Point `store.path` at a file and the router keeps a row per served request: the
+alias, the upstream that answered, the tokens, the latency and the cost.
+
+```yaml
+store:
+  path: ~/.omp-router/usage.db
+  queueSize: 1024
+```
+
+Read it back through the router, with the same credential inference uses:
+
+```bash
+curl -H "Authorization: Bearer $ROUTER_KEY" \
+  'http://127.0.0.1:8787/usage?group_by=alias&since=7d'
+```
+
+| Query | Meaning |
+| --- | --- |
+| `/usage` | the 100 most recent requests |
+| `/usage?group_by=alias` | totals per alias, most expensive first |
+| `/usage?since=7d&alias=…` | a window, filtered |
+| `/usage?upstream=openrouter` | one provider |
+| `/usage?limit=500` | more rows (max 1000) |
+
+`since` and `until` accept an RFC3339 timestamp or a duration (`30m`, `24h`,
+`7d`). `group_by` accepts `alias`, `upstream`, `upstream_model` and
+`cost_source`. The response reports the window's totals alongside the rows or
+the groups, so a client does not have to add them up.
+
+Or skip the router entirely — it is an ordinary SQLite file, and any client will
+do, from the `sqlite3` CLI to Datasette:
+
+```sql
+SELECT upstream, count(*), sum(cost_usd) FROM requests GROUP BY 1;
+```
+
+**This is history, not enforcement.** Nothing here caps or refuses spend; it
+records it. Budgets, keys and tenancy are a control plane, and deliberately
+absent.
+
+Four properties are worth knowing:
+
+- **A request whose provider reported nothing stores NULL, not zero.** The token
+  columns are nullable precisely so that `SUM` cannot count spend that was never
+  measured; `/usage` reports those requests separately under `unreported`.
+- **Writing never applies back-pressure.** Records pass through a bounded queue
+  to a single writer. If the disk cannot keep up they are dropped and counted in
+  `dropped_records`, because accounting must never be the reason an inference
+  call is slow, or the reason one fails.
+- **The file is readable while the router runs.** WAL mode is on, which is also
+  why `-wal` and `-shm` files appear beside it.
+- **Only served requests are recorded.** When every target failed there is no
+  usage, no cost and no upstream that answered, so that request is logged rather
+  than stored.
+
 ## Design notes
 
 **Failover happens strictly before the first response byte is committed.** The
@@ -449,5 +508,11 @@ fragmentation-invariant streaming, and refusal of untranslatable pairs at load),
 CLI-backed upstreams (prompt rendering from either content form, `{prompt}`
 substitution and its error cases, incremental deltas from a real subprocess,
 reported cost and usage, stderr surfaced on failure, context cancellation, plus
-serving both wires through a command and refusing an `apiKey` on one), and the
-YAML-on-disk path through `LoadConfig`.
+serving both wires through a command and refusing an `apiKey` on one), the usage
+store (WAL actually applied through a URL-escaped DSN, a durable flush on close,
+sub-second ordering and range filtering, NULL rather than zero for unreported
+usage, grouped aggregates, refusal of a non-whitelisted group column,
+drop-rather-than-block under a full queue, idempotent close, and inertness when
+disabled), the `/usage` endpoint (report shapes, key enforcement, and rejection
+of bad windows, limits and group columns), and the YAML-on-disk path through
+`LoadConfig`.

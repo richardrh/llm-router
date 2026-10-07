@@ -80,7 +80,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srv := NewServer(cfg, router, log)
+	store, err := openUsageStore(cfg, log)
+	if err != nil {
+		return err
+	}
+	// Flushes what is queued and releases the file. Close is safe on a nil
+	// store, so this needs no guard for the feature being off.
+	defer store.Close()
+
+	srv := NewServer(cfg, router, log, store)
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -96,11 +104,16 @@ func run() error {
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 
+	usageStore := "off"
+	if cfg.Store.Path != "" {
+		usageStore = cfg.Store.Path
+	}
 	log.Info("omp-router listening",
 		"addr", ln.Addr().String(),
 		"aliases", len(cfg.Models),
 		"upstreams", len(cfg.Upstreams),
-		"auth", cfg.APIKey != "")
+		"auth", cfg.APIKey != "",
+		"usage_store", usageStore)
 
 	errCh := make(chan error, 1)
 	go func() {

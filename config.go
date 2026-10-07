@@ -56,6 +56,7 @@ type Config struct {
 	Listen    string              `yaml:"listen"`
 	APIKey    string              `yaml:"apiKey"`
 	Defaults  Defaults            `yaml:"defaults"`
+	Store     StoreConfig         `yaml:"store"`
 	Upstreams map[string]Upstream `yaml:"upstreams"`
 	Models    map[string]Alias    `yaml:"models"`
 
@@ -63,6 +64,19 @@ type Config struct {
 	// that disagrees with the model capability table. They are reported to the
 	// operator but do not stop the router.
 	Warnings []string `yaml:"-"`
+}
+
+// StoreConfig configures the local usage database. An empty path disables it,
+// and the router then keeps no record of what it served beyond the log.
+type StoreConfig struct {
+	// Path is the SQLite file. A missing parent directory is created. WAL mode
+	// is enabled, so an external reader can query it while the router writes,
+	// and `-wal`/`-shm` files sit alongside it.
+	Path string `yaml:"path"`
+	// QueueSize bounds how many records may wait to be written. Past it, records
+	// are dropped and counted, so a slow disk can never slow down or fail a
+	// request. Zero takes the default.
+	QueueSize int `yaml:"queueSize"`
 }
 
 type Defaults struct {
@@ -299,6 +313,17 @@ func (c *Config) validate() error {
 	// the output is stable.
 	warns := map[string]bool{}
 	warn := func(format string, args ...any) { warns[fmt.Sprintf(format, args...)] = true }
+
+	// A directory in store.path would otherwise surface as an opaque failure
+	// from the SQLite driver at startup.
+	if c.Store.QueueSize < 0 {
+		add("store.queueSize must not be negative")
+	}
+	if c.Store.Path != "" {
+		if info, err := os.Stat(c.Store.Path); err == nil && info.IsDir() {
+			add("store.path %q is a directory; name a file for the router to create", c.Store.Path)
+		}
+	}
 
 	if len(c.Upstreams) == 0 {
 		add("at least one upstream is required")

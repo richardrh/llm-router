@@ -50,6 +50,25 @@ defaults:
   # and routing to an expired one costs a cache write instead of saving one.
   cacheAffinityTTL: 5m
 
+# Local usage history, in a SQLite file. One row per served request: the alias,
+# the upstream that answered, the tokens and the cost.
+#
+# Query it through the router:
+#   curl -H "Authorization: Bearer $ROUTER_KEY" \
+#     'http://127.0.0.1:8787/usage?group_by=alias&since=7d'
+# or open the file directly, even while the router runs (WAL is enabled):
+#   sqlite3 ~/.omp-router/usage.db \
+#     'SELECT upstream, count(*), sum(cost_usd) FROM requests GROUP BY 1'
+#
+# Delete `path` to disable it; the router then keeps no history beyond the log.
+# Tokens are stored NULL, not zero, when a provider reports no usage, so a cost
+# total never counts spend that was never measured. The /usage response reports
+# dropped_records: a full queue discards records rather than ever slowing a
+# request down.
+store:
+  path: ~/.omp-router/usage.db
+  queueSize: 1024
+
 upstreams:
   openrouter:
     baseUrl: https://openrouter.ai/api/v1

@@ -25,11 +25,14 @@ type Server struct {
 	cfg    *Config
 	log    *slog.Logger
 	client *http.Client
-	seq    atomic.Uint64
+	// store is nil when usage persistence is off. Every caller treats nil as
+	// "record nothing", so the feature needs no enabled flag of its own.
+	store *Store
+	seq   atomic.Uint64
 }
 
-func NewServer(cfg *Config, router *Router, log *slog.Logger) *Server {
-	return &Server{router: router, cfg: cfg, log: log, client: newHTTPClient()}
+func NewServer(cfg *Config, router *Router, log *slog.Logger, store *Store) *Server {
+	return &Server{router: router, cfg: cfg, log: log, client: newHTTPClient(), store: store}
 }
 
 // Handler mounts the client surface. Discovery is registered under /api/v1 as
@@ -47,6 +50,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(p, s.handleModelGroupInfo)
 	}
 	mux.HandleFunc("/healthz", s.handleHealth)
+	// Local reporting. Deliberately outside /v1: OpenRouter has no /usage, and
+	// inventing one there would imply a compatibility this does not have.
+	mux.HandleFunc("/usage", s.handleUsage)
 	mux.HandleFunc("/", s.handleRoot)
 	return mux
 }
@@ -223,7 +229,7 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 			if outcome.hasUsage {
 				s.router.affinity.observe(fingerprint, c.upstream.name, outcome.usage, time.Now())
 			}
-			s.finishLog(logger, aliasName, c, outcome, start)
+			s.finishLog(logger, reqID, aliasName, c, outcome, start)
 			return
 		}
 		lastErr = err
@@ -252,7 +258,9 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 		fmt.Sprintf("no target could serve model %q: %v", aliasName, lastErr))
 }
 
-func (s *Server) finishLog(logger *slog.Logger, aliasName string, c candidate, outcome attemptOutcome, start time.Time) {
+func (s *Server) finishLog(logger *slog.Logger, reqID, aliasName string, c candidate, outcome attemptOutcome, start time.Time) {
+	elapsed := time.Since(start)
+
 	attrs := []any{
 		"alias", aliasName,
 		"upstream", c.upstream.name,
@@ -261,28 +269,56 @@ func (s *Server) finishLog(logger *slog.Logger, aliasName string, c candidate, o
 		"attempts", outcome.attempts,
 		"streamed", outcome.streamed,
 		"bytes", outcome.bytes,
-		"total_ms", time.Since(start).Milliseconds(),
+		"total_ms", elapsed.Milliseconds(),
 	}
+
+	rec := UsageRecord{
+		Timestamp:     start,
+		RequestID:     reqID,
+		Alias:         aliasName,
+		Upstream:      c.upstream.name,
+		UpstreamModel: c.target.Model,
+		Status:        outcome.status,
+		Attempts:      outcome.attempts,
+		Streamed:      outcome.streamed,
+		Bytes:         outcome.bytes,
+		TotalMS:       elapsed.Milliseconds(),
+	}
+
 	if outcome.hasUsage {
 		attrs = append(attrs,
 			"input_tokens", outcome.usage.InputTokens,
 			"output_tokens", outcome.usage.OutputTokens,
 			"cache_read_tokens", outcome.usage.CacheReadTokens,
 			"cache_write_tokens", outcome.usage.CacheWriteTokens)
+		// Pointers, so the store can tell a reported zero from silence.
+		rec.InputTokens = new(outcome.usage.InputTokens)
+		rec.OutputTokens = new(outcome.usage.OutputTokens)
+		rec.CacheReadTokens = new(outcome.usage.CacheReadTokens)
+		rec.CacheWriteTokens = new(outcome.usage.CacheWriteTokens)
 	}
+
+	// One cost decision, feeding both the log and the store, so the two cannot
+	// drift apart.
 	switch {
 	case outcome.hasCost:
 		// A CLI-backed agent reports what it actually spent, which beats any
 		// estimate the router could make, so it is used as given.
-		attrs = append(attrs, "cost_usd", outcome.costUSD, "cost_source", "reported")
+		rec.CostUSD, rec.CostSource = outcome.costUSD, "reported"
 	case outcome.hasUsage:
-		attrs = append(attrs, "cost_usd",
-			s.cfg.Models[aliasName].Cost.Estimate(outcome.usage), "cost_source", "estimated")
+		rec.CostUSD, rec.CostSource = s.cfg.Models[aliasName].Cost.Estimate(outcome.usage), "estimated"
 	default:
 		// No counts were reported, so no cost is claimed. An invented figure
-		// would be worse than an absent one.
+		// would be worse than an absent one. The store keeps the token columns
+		// NULL for the same reason.
+		rec.CostSource = "unreported"
 		attrs = append(attrs, "usage", "unreported")
 	}
+	if rec.CostSource != "unreported" {
+		attrs = append(attrs, "cost_usd", rec.CostUSD, "cost_source", rec.CostSource)
+	}
+
+	s.store.Record(rec)
 	logger.Info("served", attrs...)
 }
 

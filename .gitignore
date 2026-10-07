@@ -10,6 +10,12 @@
 .env
 .env.*
 
+# Usage database. It records every request and its cost, and is local state
+# rather than source. WAL mode also creates -wal and -shm files alongside it.
+*.db
+*.db-wal
+*.db-shm
+
 # Editor and OS noise
 .DS_Store
 .idea/

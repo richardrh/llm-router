@@ -78,7 +78,7 @@ func cliTestServer(t *testing.T, api APIProtocol, script string) (*Server, *byte
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
-	return NewServer(cfg, r, log), &logs
+	return NewServer(cfg, r, log, nil), &logs
 }
 
 func cliPost(t *testing.T, srv *Server, path string, body map[string]any) (*http.Response, string) {
