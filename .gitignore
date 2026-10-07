@@ -1,5 +1,5 @@
 # Built binary
-/omp-router
+/llm-router
 
 # Go build and test artefacts
 *.test
@@ -20,3 +20,7 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Hugo build output
+docs/public/
+docs/.hugo_build.lock

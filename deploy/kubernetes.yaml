@@ -1,0 +1,142 @@
+# llm-router on Kubernetes.
+#
+#   kubectl apply -f deploy/kubernetes.yaml
+#   kubectl create secret generic llm-router-keys \
+#     --from-literal=OPENROUTER_API_KEY=sk-or-... \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...   # only if the config uses it
+#
+# The ConfigMap below is a working minimal config: one alias served by
+# OpenRouter. Replace it with the full router.yaml (kubectl create configmap
+# llm-router-config --from-file=router.yaml --dry-run=client -o yaml | kubectl
+# apply -f -) to get multi-provider failover and wire translation.
+#
+# The usage store is a local SQLite file on an emptyDir, so it lives and dies
+# with the pod; use a PVC if you want it to survive restarts. Replicas must stay
+# at 1: each replica keeps its own store, session pins and cache-affinity
+# observations in-process.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-router-config
+  labels:
+    app: llm-router
+data:
+  router.yaml: |
+    listen: 0.0.0.0:8787
+
+    # Empty accepts any bearer key. Bound to a Service it is reachable cluster-
+    # wide; set a shared key here or protect the Service with a NetworkPolicy.
+    apiKey: ""
+
+    defaults:
+      maxAttempts: 3
+      sticky: true
+      stickyByPrefix: true
+      firstByteTimeout: 120s
+      streamIdleTimeout: 180s
+      maxStreamDuration: 45m
+      maxBodyBytes: 33554432
+      breakerFailures: 4
+      breakerCooldown: 30s
+      rateLimitCooldown: 20s
+      rewriteModel: true
+      injectStreamUsage: true
+      cacheAffinity: true
+      cacheAffinityTTL: 5m
+
+    store:
+      path: /data/usage.db
+      maxRows: 130000
+
+    upstreams:
+      openrouter:
+        baseUrl: https://openrouter.ai/api/v1
+        apiKeyEnv: OPENROUTER_API_KEY
+        maxConcurrency: 8
+        headers:
+          HTTP-Referer: https://github.com/richardrh/llm-router
+          X-Title: llm-router
+
+    models:
+      anthropic/claude-opus-5.5:
+        api: openai-completions
+        contextWindow: 1000000
+        maxOutputTokens: 128000
+        cost: { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 5 }
+        targets:
+          - upstream: openrouter
+            model: anthropic/claude-opus-5.5
+            weight: 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-router
+  labels:
+    app: llm-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-router
+  template:
+    metadata:
+      labels:
+        app: llm-router
+    spec:
+      containers:
+        - name: llm-router
+          image: ghcr.io/richardrh/llm-router:latest
+          imagePullPolicy: IfNotPresent
+          args: ["-config", "/etc/llm-router/router.yaml"]
+          ports:
+            - name: http
+              containerPort: 8787
+          envFrom:
+            - secretRef:
+                name: llm-router-keys
+          volumeMounts:
+            - name: config
+              mountPath: /etc/llm-router
+              readOnly: true
+            - name: usage
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: llm-router-config
+        - name: usage
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-router
+  labels:
+    app: llm-router
+spec:
+  selector:
+    app: llm-router
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http

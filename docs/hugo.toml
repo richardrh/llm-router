@@ -1,0 +1,25 @@
+baseURL = "https://richardrh.github.io/llm-router/"
+languageCode = "en-us"
+title = "llm-router"
+theme = "hextra"
+
+[params]
+  description = "A small LLM proxy: one alias, several interchangeable providers, failover, wire translation, usage accounting."
+
+[markup.goldmark.renderer]
+  unsafe = true
+
+[params.navbar]
+  displayTitle = true
+  displayLogo = false
+
+[params.footer]
+  displayCopyright = true
+  displayPoweredBy = false
+
+[[menu.main]]
+  name = "GitHub"
+  url = "https://github.com/richardrh/llm-router"
+  weight = 10
+  [menu.main.params]
+    icon = "github"

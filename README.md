@@ -1,11 +1,11 @@
-# omp-router
+# llm-router
 
 A small proxy that speaks **OpenRouter's wire format to the client** and its own
 to each upstream. One model name, several interchangeable providers, and the
 caller never learns which one served it.
 
 ```
-agent ──POST /api/v1/chat/completions {"model":"anthropic/claude-opus-5.5"}──▶ omp-router
+agent ──POST /api/v1/chat/completions {"model":"anthropic/claude-opus-5.5"}──▶ llm-router
                                                         ├─ openrouter  anthropic/claude-opus-5.5  (weight 1)
                                                         └─ anthropic   claude-opus-5-5            (weight 0, failover only)
 ```
@@ -15,18 +15,49 @@ Point a client at `http://127.0.0.1:8787/api/v1` instead of
 `anthropic/claude-*` model strings. The alias names in `router.yaml` *are*
 OpenRouter's, so nothing else on the client changes.
 
+**Documentation: https://richardrh.github.io/llm-router/** — the README below is
+the same material, formatted as a browsable site with [Hextra](https://imfing.github.io/hextra/).
+
 The alias is yours to define, and each upstream keeps its own real model id —
 which is the point: `anthropic/claude-opus-5.5` is what OpenRouter calls it,
 `claude-opus-5-5` is what the Claude API calls it, and the router is where that
 difference lives. When a provider is down, throttled, or saturated, the request
 moves on without the agent noticing.
 
-## Why not LiteLLM / new-api / Bifrost
+## Why llm-router
 
-Surveyed against the actual repos (2026-10-05). The short version: the thing you
-asked for is one narrow operation — *rewrite one alias into different upstream
-model ids, spread across providers, fail over* — and no project does exactly that
-without dragging in a control plane.
+The thing it does is one narrow operation — *rewrite one alias into different
+upstream model ids, spread across providers, fail over* — and it does that, with
+a footprint you can hold in your head, instead of also being a control plane.
+
+### LiteLLM vs llm-router
+
+[LiteLLM](https://github.com/BerriAI/litellm) is the most-deployed gateway of
+this kind, so it is the fair comparison:
+
+| | llm-router | LiteLLM |
+| --- | --- | --- |
+| Language & runtime | Go 1.26; one static binary, no runtime dependencies | Python; a proxy server plus its dependency tree |
+| Footprint | ~17 MB binary + one YAML file; no database required | Python app; keys, budgets and teams want a Postgres database, admin UI on top |
+| Licence | none published yet | MIT |
+| Provider breadth | whatever you configure: any OpenAI- or Anthropic-compatible base URL, plus cli upstreams | 100+ provider integrations, maintained upstream |
+| Alias → several providers | per-target model ids, weights, weight-0 failover-only targets | `model_name` with multiple deployments, weights and fallbacks — its closest feature match |
+| Wire translation | OpenAI Chat ↔ Anthropic Messages in both directions, streams translated incrementally without buffering | serves the OpenAI format and converts to provider SDKs; native passthrough routes for some providers |
+| Session & cache affinity | session pins, prefix-derived pins, and routing toward warm prompt caches learned from provider-reported cache reads | several routing strategies (least-busy, latency, usage, cost); prompt-cache affinity is not one of them |
+| Usage & cost accounting | a SQLite file, one row per served request, cost from declared rates, queryable over `/usage` while running | spend tracking through its database or callbacks to external systems |
+| Subscription-backed upstreams | `kind: cli` runs the unmodified Claude Code / codex binary under your own login | not offered; proxies hold API keys |
+| Control plane (keys, budgets, teams, UI) | deliberately none | a core feature |
+
+The honest verdict: if you want provider breadth, virtual keys, budgets and a
+team console, LiteLLM is the more complete product and is MIT-licensed — use it.
+If you want one small proxy whose whole configuration is a readable YAML file,
+that runs as a single static binary anywhere — laptop, container, pod — and that
+translates wires and tracks cache-aware usage without a database, llm-router is
+the smaller tool for that job.
+
+### The other candidates
+
+Surveyed against the actual repos (2026-10-05):
 
 | Project | Language / licence | Verdict for this job |
 | --- | --- | --- |
@@ -40,15 +71,17 @@ without dragging in a control plane.
 So: ~600 lines of Go you can read in one sitting, versus adopting an AGPL
 multi-tenant gateway or an Enterprise-gated one to get one feature.
 
-## Quick start
+## Running llm-router
+
+### From source
 
 ```bash
-go build -o omp-router .                   # requires Go 1.26 or newer
+go build -o llm-router .                   # requires Go 1.26 or newer
 export OPENROUTER_API_KEY=sk-or-...        # at least one provider
 export ANTHROPIC_API_KEY=sk-ant-...
 
-./omp-router -check                        # validate, print resolved routes
-./omp-router                               # listen on 127.0.0.1:8787
+./llm-router -check                        # validate, print resolved routes
+./llm-router                               # listen on 127.0.0.1:8787
 ```
 
 Then talk to it exactly as you would to OpenRouter:
@@ -68,6 +101,58 @@ Responses carry the routing decision:
 ```
 X-Router-Upstream: openrouter
 X-Router-Upstream-Model: anthropic/claude-opus-5.5
+```
+
+### Docker
+
+The binary is static (the SQLite driver is pure Go), so the image is a
+multi-stage build onto a distroless base: no shell, no package manager, running
+as `nonroot`. Only the config is mounted; keys come in through the environment.
+
+```bash
+docker build -t llm-router .
+docker run --rm -p 8787:8787 \
+  -v "$PWD/router.yaml":/etc/llm-router/router.yaml:ro \
+  -e OPENROUTER_API_KEY -e ANTHROPIC_API_KEY \
+  llm-router -config /etc/llm-router/router.yaml
+```
+
+`docker run` never creates files it wasn't given, so with the usage store on a
+bind-mounted file (`store.path`) the SQLite history survives the container.
+
+### Kubernetes
+
+`deploy/kubernetes.yaml` ships a working minimal config (one alias served by
+OpenRouter), a Deployment and a Service:
+
+```bash
+kubectl apply -f deploy/kubernetes.yaml
+kubectl create secret generic llm-router-keys \
+  --from-literal=OPENROUTER_API_KEY=sk-or-...
+kubectl port-forward svc/llm-router 8787:8787
+# now the curl from "From source" works against 127.0.0.1:8787
+```
+
+For the full multi-provider config, replace the ConfigMap with your own
+`router.yaml`:
+
+```bash
+kubectl create configmap llm-router-config \
+  --from-file=router.yaml --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Two constraints are load-bearing, both stated in the manifest: the usage store
+lives on an `emptyDir`, so it dies with the pod unless you swap in a PVC; and
+keep `replicas: 1`, because each replica keeps its own SQLite file, session pins
+and cache-affinity observations — running several would fork the accounting and
+the pinning without any of them being wrong.
+
+To publish the image the manifest expects:
+
+```bash
+docker tag llm-router ghcr.io/<your-user>/llm-router:latest
+docker push ghcr.io/<your-user>/llm-router:latest
+# and update image: in deploy/kubernetes.yaml to match
 ```
 
 ### Credentials
@@ -332,7 +417,7 @@ alias, the upstream that answered, the tokens, the latency and the cost.
 
 ```yaml
 store:
-  path: ~/.omp-router/usage.db
+  path: ~/.llm-router/usage.db
   queueSize: 1024
   maxRows: 130000        # about 10 MB, keeping the newest 130k requests
 ```
