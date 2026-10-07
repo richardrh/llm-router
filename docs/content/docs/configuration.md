@@ -17,13 +17,17 @@ knowing:
 | `upstreams.<name>.baseUrl` | Provider root; the protocol's path is appended. |
 | `upstreams.<name>.apiKeyEnv` | Env var holding the key. Preferred over `apiKey`. |
 | `upstreams.<name>.kind` | `http` (the default) or `cli`. |
-| `upstreams.<name>.command` | argv for a `cli` upstream; must contain `{prompt}` exactly once. |
-| `upstreams.<name>.timeout` | Bounds one `cli` invocation. Defaults to `maxStreamDuration`. |
+| `upstreams.<name>.mode` | `one-shot` (default) or `persistent` for a long-lived Claude Code session. |
+| `upstreams.<name>.command` | argv for a `cli` upstream; one-shot commands contain `{prompt}`, persistent commands may contain `{model}`. |
+| `upstreams.<name>.cwd` | Working directory for a CLI process; Claude Code discovers project configuration here. |
+| `upstreams.<name>.timeout` | Bounds one CLI turn. Defaults to `maxStreamDuration`. |
+| `upstreams.<name>.maxSessions` | Maximum live persistent CLI processes. Defaults to `maxConcurrency`. |
+| `upstreams.<name>.sessionIdleTimeout` | Closes inactive persistent CLI processes. Zero keeps them alive until shutdown. |
 | `upstreams.<name>.authStyle` | `bearer` (the default) or `anthropic`. |
 | `upstreams.<name>.headers` | Extra headers per upstream, overriding the client's. |
 | `upstreams.<name>.bodyDrop` | Top-level JSON fields removed before dispatch. |
 | `upstreams.<name>.bodyPatch` | Top-level JSON fields forced. |
-| `upstreams.<name>.maxConcurrency` | In-flight cap. At the limit: skipped, never queued. |
+| `upstreams.<name>.maxConcurrency` | In-flight turn cap. At the limit: skipped, never queued. |
 | `models.<alias>.api` | Wire protocol clients speak for this alias. |
 | `models.<alias>.contextWindow`, `maxOutputTokens`, `cost` | Advertised to clients for budgeting; not enforced upstream. |
 | `models.<alias>.targets[]` | Where the alias may be served: upstream, model id, weight. |

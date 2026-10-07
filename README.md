@@ -73,7 +73,7 @@ is the smaller tool for that job.
 
 What the code does, verified:
 
-- **Constant-time gateway key check.** `crypto/subtle.ConstantTimeCompare` in `server.go`, applied to inference and `/usage` alike.
+- **Constant-time gateway key check.** `crypto/subtle.ConstantTimeCompare` in `internal/router/server.go`, applied to inference and `/usage` alike.
 - **Client credentials are never relayed.** Inbound `Authorization`, `x-api-key` and `api-key` are dropped before dispatch; the target gets only its own configured key. An Anthropic-wire client's Claude key never reaches whichever provider the alias picks. Hop-by-hop headers are not forwarded.
 - **Secrets live in the environment.** `apiKeyEnv` is preferred; no key is required in `router.yaml`. On Kubernetes they come from a Secret, not the ConfigMap.
 - **cli upstreams store and proxy nothing.** A `kind: cli` upstream is rejected at load if it carries an `apiKey`. The unmodified Claude Code binary runs under your login and the router reads only its stdout — subscription credentials never pass through the proxy, which is also what Anthropic's policy requires.
@@ -85,7 +85,7 @@ What the code does, verified:
 ### From source
 
 ```bash
-go build -o llm-router .                   # requires Go 1.26 or newer
+go build -o llm-router ./cmd/llm-router   # requires Go 1.26 or newer
 export OPENROUTER_API_KEY=sk-or-...        # at least one provider
 export ANTHROPIC_API_KEY=sk-ant-...
 
@@ -200,20 +200,31 @@ to give it.
 upstreams:
   claude-code:
     kind: cli
-    command: [claude, -p, "{prompt}", --output-format, stream-json,
-              --verbose, --include-partial-messages]
-    maxConcurrency: 2      # each request is a process; keep this small
+    mode: persistent
+    command: [claude, -p, --input-format, stream-json,
+              --output-format, stream-json, --verbose,
+              --include-partial-messages, --model, "{model}"]
+    cwd: /path/to/project
+    maxSessions: 2
+    sessionIdleTimeout: 30m
 ```
 
-Leave `--bare` out: it skips the subscription login and demands an API key, which
-defeats the point. `codex exec` follows the same pattern for the OpenAI
-subscription, though Pi already supports that natively via `/login openai-codex`.
+The persistent mode keeps one unmodified Claude Code process per client
+session. It sends later turns through Claude Code's stream-JSON stdin protocol,
+so Claude Code retains its normal system prompt, `CLAUDE.md`, hooks, skills,
+plugins, MCP servers, tools, subagents and subscription login. The client must
+send a stable session header such as `X-OMP-Session`; when absent, the router
+derives a key from the conversation prefix.
 
-**Be honest about what this is.** A CLI upstream spawns a process per request,
-and `claude -p` is an *agent loop with its own tools*, not a chat model. The
-conversation is flattened into a single prompt, client-supplied tools are
-dropped, and every call pays the CLI's startup cost. It reaches a subscription;
-it does not make a subscription equivalent to a completion API.
+The `model` target is substituted when the process starts. A session cannot
+change models midway. `cwd` controls which project configuration Claude Code
+loads. Do not use `--bare` when subscription login and normal project behavior
+are required.
+
+The older one-shot CLI mode remains available with a `{prompt}` placeholder,
+but it flattens the request and starts a fresh process per turn. Persistent
+mode is the normal Claude Code agent path. Client-supplied `tools` are not
+forwarded: Claude Code owns the tools and executes them inside its process.
 
 For an ordinary completion API, use an [OpenRouter](https://openrouter.ai/keys)
 key for the one-endpoint many-provider case, or an Anthropic Console key for
@@ -294,7 +305,7 @@ setting `anthropic-version` under that upstream's `headers:`.
 OpenAI-compatible `/v1/chat/completions` under the same base URL, so a single
 `anthropic` upstream backs client aliases of either protocol.
 
-**Configuration is checked against a model capability table.** `capabilities.json`
+**Configuration is checked against a model capability table.** `internal/config/capabilities.json`
 is an embedded snapshot of the Claude models' limits, pricing and capability
 flags, transcribed from the providers' published figures and cross-checked
 against LiteLLM's model map. Loading a config uses it two ways:

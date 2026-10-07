@@ -13,8 +13,9 @@ FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY *.go capabilities.json ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /llm-router .
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /llm-router ./cmd/llm-router
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /llm-router /llm-router

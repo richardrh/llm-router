@@ -1,4 +1,4 @@
-package main
+package claudecode
 
 import (
 	"bufio"
@@ -81,6 +81,32 @@ func newCLIPrompt(fields map[string]json.RawMessage) (string, error) {
 		return "", errors.New("request contains no text")
 	}
 	return strings.Join(parts, "\n\n"), nil
+}
+
+// newCLILastPrompt extracts only the newest user turn for a persistent Claude
+// Code process. Claude Code already owns the preceding transcript.
+func newCLILastPrompt(fields map[string]json.RawMessage) (string, error) {
+	raw, ok := fields["messages"]
+	if !ok {
+		return "", errors.New("request has no messages")
+	}
+	var messages []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return "", fmt.Errorf("invalid messages: %w", err)
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		text := cliMessageText(messages[i].Content)
+		if strings.TrimSpace(text) != "" {
+			return text, nil
+		}
+	}
+	return "", errors.New("request contains no user text")
 }
 
 func cliMessageText(raw json.RawMessage) string {
@@ -205,7 +231,7 @@ func runCLICommand(ctx context.Context, argv []string, onText func(string) error
 						result.HasCost = true
 					}
 					result.Usage = Usage{}
-					result.Usage.mergeFromJSON(line)
+					result.Usage.MergeFromJSON(line)
 					if event.IsError {
 						resultErr = errors.New("CLI returned an error result")
 					}
@@ -338,3 +364,7 @@ func cliAnthropicResponse(r cliRun, alias string) []byte {
 	encoded, _ := json.Marshal(body)
 	return encoded
 }
+
+func (s *cliOpenAIStream) Start() []byte            { return s.start() }
+func (s *cliOpenAIStream) Text(delta string) []byte { return s.text(delta) }
+func (s *cliOpenAIStream) Done(r cliRun) []byte     { return s.done(r) }

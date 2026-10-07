@@ -1,7 +1,8 @@
-package main
+package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,9 @@ import (
 // *http.Response, because there is no upstream response to own: the reply is
 // written here rather than by the shared HTTP path.
 func (s *Server) attemptCLI(ctx context.Context, w http.ResponseWriter, plan *requestPlan, c candidate, logger *slog.Logger) (*http.Response, attemptOutcome, error) {
+	if c.upstream.cfg.CLIModeValue() == CLIPersistent {
+		return s.attemptPersistentCLI(ctx, w, plan, c, logger)
+	}
 	timeout := c.upstream.cfg.Timeout.Duration()
 	if timeout <= 0 {
 		timeout = s.cfg.Defaults.MaxStreamDuration.Duration()
@@ -108,11 +112,11 @@ func (s *Server) streamCLI(ctx context.Context, w http.ResponseWriter, plan *req
 	}
 
 	chunks := newCLIOpenAIStream(plan.alias)
-	if err := emit(chunks.start()); err != nil {
+	if err := emit(chunks.Start()); err != nil {
 		return err
 	}
 
-	run, err := runCLICommand(ctx, argv, func(delta string) error { return emit(chunks.text(delta)) })
+	run, err := runCLICommand(ctx, argv, func(delta string) error { return emit(chunks.Text(delta)) })
 	if err != nil {
 		// Bytes may already have reached the client, so this cannot fail over.
 		// The stream is terminated cleanly — a hanging client is worse than a
@@ -122,12 +126,12 @@ func (s *Server) streamCLI(ctx context.Context, w http.ResponseWriter, plan *req
 			"upstream", c.upstream.name, "error", err.Error())
 		outcome.status = http.StatusBadGateway
 		recordCLIUsage(outcome, cliRun{})
-		if werr := emit(chunks.done(cliRun{})); werr != nil {
+		if werr := emit(chunks.Done(cliRun{})); werr != nil {
 			return werr
 		}
 	} else {
 		recordCLIUsage(outcome, run)
-		if werr := emit(chunks.done(run)); werr != nil {
+		if werr := emit(chunks.Done(run)); werr != nil {
 			return werr
 		}
 	}
@@ -150,4 +154,94 @@ func recordCLIUsage(outcome *attemptOutcome, run cliRun) {
 		outcome.costUSD = run.CostUSD
 		outcome.hasCost = true
 	}
+}
+
+func (s *Server) attemptPersistentCLI(ctx context.Context, w http.ResponseWriter, plan *requestPlan, c candidate, logger *slog.Logger) (*http.Response, attemptOutcome, error) {
+	if c.upstream.sessions == nil {
+		return nil, attemptOutcome{}, errors.New("persistent CLI upstream has no session manager")
+	}
+	timeout := c.upstream.cfg.Timeout.Duration()
+	if timeout <= 0 {
+		timeout = s.cfg.Defaults.MaxStreamDuration.Duration()
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	firstPrompt, err := newCLIPrompt(plan.fields)
+	if err != nil {
+		return nil, attemptOutcome{}, fmt.Errorf("upstream %s: %w", c.upstream.name, err)
+	}
+	nextPrompt, err := newCLILastPrompt(plan.fields)
+	if err != nil {
+		return nil, attemptOutcome{}, fmt.Errorf("upstream %s: %w", c.upstream.name, err)
+	}
+	sessionKey := plan.alias + "\x00" + plan.sessionKey
+
+	outcome := attemptOutcome{status: http.StatusOK}
+	if plan.stream {
+		flusher, _ := w.(http.Flusher)
+		stream := newCLIOpenAIStream(plan.alias)
+		xlate := newStreamTranslator(plan.api, APIOpenAICompletions, plan.alias)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Router-Upstream", c.upstream.name)
+		w.Header().Set("X-Router-Upstream-Model", c.target.Model)
+		w.WriteHeader(http.StatusOK)
+		raw := func(b []byte) error {
+			if len(b) == 0 {
+				return nil
+			}
+			if _, err := w.Write(b); err != nil {
+				return err
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			outcome.bytes += int64(len(b))
+			return nil
+		}
+		emit := func(b []byte) error {
+			if xlate == nil {
+				return raw(b)
+			}
+			return raw(xlate.Write(b))
+		}
+		if err := emit(stream.Start()); err != nil {
+			return nil, attemptOutcome{}, err
+		}
+		run, runErr := c.upstream.sessions.Run(ctx, sessionKey, c.target.Model, firstPrompt, nextPrompt,
+			func(delta string) error { return emit(stream.Text(delta)) })
+		if runErr != nil {
+			outcome.status = http.StatusBadGateway
+			logger.Error("persistent cli upstream failed mid-stream",
+				"upstream", c.upstream.name, "error", runErr.Error())
+			_ = emit(stream.Done(cliRun{}))
+		} else {
+			recordCLIUsage(&outcome, run)
+			_ = emit(stream.Done(run))
+		}
+		if xlate != nil {
+			_ = raw(xlate.Close())
+		}
+		return nil, outcome, nil
+	}
+
+	run, err := c.upstream.sessions.Run(ctx, sessionKey, c.target.Model, firstPrompt, nextPrompt, nil)
+	if err != nil {
+		return nil, attemptOutcome{}, err
+	}
+	recordCLIUsage(&outcome, run)
+	body := cliOpenAIResponse(run, plan.alias)
+	if plan.api == APIAnthropicMessages {
+		body = cliAnthropicResponse(run, plan.alias)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Router-Upstream", c.upstream.name)
+	w.Header().Set("X-Router-Upstream-Model", c.target.Model)
+	w.WriteHeader(http.StatusOK)
+	outcome.bytes = int64(len(body))
+	if _, err := w.Write(body); err != nil {
+		logger.Warn("client write failed", "upstream", c.upstream.name, "error", err.Error())
+	}
+	return nil, outcome, nil
 }

@@ -1,4 +1,4 @@
-package main
+package claudecode
 
 import (
 	"context"

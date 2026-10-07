@@ -1,10 +1,11 @@
-package main
+package router
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"llm-router/internal/usage"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -1714,12 +1715,13 @@ func TestUsageObserverMergesAnthropicStream(t *testing.T) {
 		obs.Write([]byte(stream[i:min(i+7, len(stream))]))
 	}
 
-	if !obs.found {
+	got, found := obs.Result()
+	if !found {
 		t.Fatal("no usage observed")
 	}
 	want := Usage{InputTokens: 20, OutputTokens: 25, CacheReadTokens: 80, CacheWriteTokens: 10}
-	if obs.usage != want {
-		t.Errorf("usage = %+v, want %+v", obs.usage, want)
+	if got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
 	}
 }
 
@@ -1728,18 +1730,19 @@ func TestUsageObserverMergesAnthropicStream(t *testing.T) {
 // rest of the stream either.
 func TestUsageObserverRecoversFromAnOversizedLine(t *testing.T) {
 	var obs usageObserver
-	obs.Write([]byte("data: {\"pad\":\"" + strings.Repeat("x", maxSSELine+10)))
+	obs.Write([]byte("data: {\"pad\":\"" + strings.Repeat("x", usage.MaxSSELine+10)))
 	obs.Write([]byte("\n"))
 	obs.Write([]byte("data: {\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n"))
 
-	if !obs.found {
+	got, found := obs.Result()
+	if !found {
 		t.Fatal("the observer gave up after an oversized line instead of resuming")
 	}
-	if obs.usage.InputTokens != 5 || obs.usage.OutputTokens != 2 {
-		t.Errorf("usage = %+v, want 5 input / 2 output", obs.usage)
+	if got.InputTokens != 5 || got.OutputTokens != 2 {
+		t.Errorf("usage = %+v, want 5 input / 2 output", got)
 	}
-	if len(obs.partial) > maxSSELine {
-		t.Errorf("line buffer grew past the cap: %d bytes", len(obs.partial))
+	if obs.BufferLen() > usage.MaxSSELine {
+		t.Errorf("line buffer grew past the cap: %d bytes", obs.BufferLen())
 	}
 }
 
@@ -1749,10 +1752,10 @@ func TestCostEstimate(t *testing.T) {
 	c := Cost{Input: 4, Output: 20, CacheRead: 0.2, CacheWrite: 5}
 	u := Usage{InputTokens: 20, OutputTokens: 20, CacheReadTokens: 80, CacheWriteTokens: 10}
 	// 20*4 + 20*20 + 80*0.2 + 10*5 = 80 + 400 + 16 + 50 = 546 per million.
-	if got := c.Estimate(u); absDiff(got, 546e-6) > 1e-12 {
+	if got := estimateCost(c, u); absDiff(got, 546e-6) > 1e-12 {
 		t.Errorf("Estimate = %v, want 546e-6", got)
 	}
-	if got := (Cost{}).Estimate(u); got != 0 {
+	if got := estimateCost(Cost{}, u); got != 0 {
 		t.Errorf("zero rates should estimate zero, got %v", got)
 	}
 	if u.TotalInput() != 110 || u.Total() != 130 {
@@ -1960,7 +1963,7 @@ func TestCacheAffinityPrefersTheWarmTarget(t *testing.T) {
 // feature is off, and a nil store must stay inert because the selection path
 // consults it unconditionally.
 func TestCacheAffinityDisabledLeavesWeightedSelection(t *testing.T) {
-	if !(&Config{}).cacheAffinityOn() {
+	if !(&Config{}).CacheAffinityOn() {
 		t.Error("cache affinity should default to on")
 	}
 
@@ -2239,7 +2242,7 @@ models:
 // than at startup on someone else's machine. Loading needs no credentials: keys
 // are resolved when the router is built, not when the config is read.
 func TestShippedConfigResolves(t *testing.T) {
-	cfg, err := LoadConfig("router.yaml")
+	cfg, err := LoadConfig("../../router.yaml")
 	if err != nil {
 		t.Fatalf("the shipped router.yaml does not load: %v", err)
 	}
@@ -2247,7 +2250,7 @@ func TestShippedConfigResolves(t *testing.T) {
 		t.Errorf("the shipped config produces warnings: %v", cfg.Warnings)
 	}
 
-	ups := cfg.upstreamsInOrder()
+	ups := cfg.UpstreamsInOrder()
 	if len(ups) != 2 {
 		t.Errorf("upstreams = %v, want exactly openrouter and anthropic", ups)
 	}
@@ -2286,7 +2289,7 @@ func TestShippedConfigResolves(t *testing.T) {
 		t.Errorf("second opus target = %s/%s, want anthropic/claude-opus-5-5",
 			opus.Targets[1].Upstream, opus.Targets[1].Model)
 	}
-	if got := []int{opus.Targets[0].weight(), opus.Targets[1].weight()}; !slices.Equal(got, []int{1, 0}) {
+	if got := []int{opus.Targets[0].WeightValue(), opus.Targets[1].WeightValue()}; !slices.Equal(got, []int{1, 0}) {
 		t.Errorf("opus weights = %v, want [1 0] (OpenRouter carries, Claude direct is failover)", got)
 	}
 

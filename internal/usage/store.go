@@ -1,12 +1,10 @@
-package main
+package usage
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"llm-router/internal/config"
 
 	_ "modernc.org/sqlite"
 )
@@ -125,7 +125,18 @@ type Store struct {
 // openUsageStore opens the configured usage database, or returns a nil store
 // when persistence is switched off. A nil store records nothing, which is how
 // the rest of the code stays free of an "is it enabled" branch.
-func openUsageStore(cfg *Config, log *slog.Logger) (*Store, error) {
+func openUsageStore(cfg *config.Config, log *slog.Logger) (*Store, error) {
+	if cfg.Store.Path == "" {
+		return nil, nil
+	}
+	return OpenStore(StoreOptions{
+		Path:      cfg.Store.Path,
+		QueueSize: cfg.Store.QueueSize,
+		MaxRows:   cfg.Store.MaxRows,
+	}, log)
+}
+
+func OpenStoreForConfig(cfg *config.Config, log *slog.Logger) (*Store, error) {
 	if cfg.Store.Path == "" {
 		return nil, nil
 	}
@@ -616,123 +627,6 @@ func parseUsageDuration(raw string) (time.Duration, error) {
 	return time.ParseDuration(raw)
 }
 
-// usageResponse is the body of a /usage report.
-type usageResponse struct {
-	Since   string       `json:"since,omitempty"`
-	Until   string       `json:"until,omitempty"`
-	GroupBy string       `json:"group_by,omitempty"`
-	Totals  UsageTotals  `json:"totals"`
-	Groups  []UsageGroup `json:"groups,omitempty"`
-	// Requests carries individual rows when no grouping was asked for.
-	Requests []UsageRecord `json:"requests,omitempty"`
-	// DroppedRecords is how many records the store discarded because the writer
-	// could not keep up. It is reported so an under-count is visible rather than
-	// quietly wrong.
-	DroppedRecords uint64 `json:"dropped_records"`
-	// Store is the database's own footprint, so a retention budget can be
-	// checked against reality.
-	Store StoreStats `json:"store"`
-}
-
-// handleUsage serves the recorded usage. This is the router's own reporting
-// surface, not part of the OpenRouter-compatible API, so it is named for what
-// it is rather than given a /v1 path it does not honour.
-//
-//	GET /usage                       recent requests
-//	GET /usage?group_by=alias        totals per alias
-//	GET /usage?since=7d&alias=…      a window, filtered
-//
-// Accepted parameters: since and until (RFC3339 or a duration like 24h, 7d),
-// alias, upstream, limit, group_by (alias, upstream, upstream_model,
-// cost_source).
-func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is supported")
-		return
-	}
-	// Spend data reveals which providers serve you and what they cost, so it
-	// carries the same credential as inference rather than being public like
-	// /healthz.
-	if !s.authorized(w, r) {
-		return
-	}
-	if s.store == nil {
-		s.writeError(w, http.StatusNotFound, "usage_store_disabled",
-			"no usage store is configured; set store.path in router.yaml")
-		return
-	}
-
-	q := r.URL.Query()
-	now := time.Now()
-
-	since, err := parseUsageTime(q.Get("since"), now)
-	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "bad_request", "since: "+err.Error())
-		return
-	}
-	until, err := parseUsageTime(q.Get("until"), now)
-	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "bad_request", "until: "+err.Error())
-		return
-	}
-
-	filter := UsageFilter{
-		Since:    since,
-		Until:    until,
-		Alias:    q.Get("alias"),
-		Upstream: q.Get("upstream"),
-	}
-	if raw := q.Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n <= 0 {
-			s.writeError(w, http.StatusBadRequest, "bad_request",
-				"limit must be a positive integer")
-			return
-		}
-		filter.Limit = n
-	}
-
-	resp := usageResponse{
-		GroupBy:        q.Get("group_by"),
-		DroppedRecords: s.store.Dropped(),
-	}
-	if !since.IsZero() {
-		resp.Since = since.UTC().Format(time.RFC3339)
-	}
-	if !until.IsZero() {
-		resp.Until = until.UTC().Format(time.RFC3339)
-	}
-
-	if resp.GroupBy != "" {
-		groups, err := s.store.Groups(filter, resp.GroupBy)
-		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-			return
-		}
-		resp.Groups = groups
-	} else {
-		rows, err := s.store.Recent(filter)
-		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, "usage_query_failed", err.Error())
-			return
-		}
-		resp.Requests = rows
-	}
-
-	totals, err := s.store.Totals(filter)
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "usage_query_failed", err.Error())
-		return
-	}
-	resp.Totals = totals
-
-	stats, err := s.store.Stats()
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "usage_query_failed", err.Error())
-		return
-	}
-	resp.Store = stats
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+func ParseUsageTime(raw string, now time.Time) (time.Time, error) {
+	return parseUsageTime(raw, now)
 }

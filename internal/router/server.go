@@ -1,4 +1,4 @@
-package main
+package router
 
 import (
 	"context"
@@ -176,7 +176,7 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 	// costs a hash of the opening turn, so it is computed only when one of them
 	// will use it.
 	var fingerprint string
-	if s.cfg.Defaults.StickyByPrefix || s.cfg.cacheAffinityOn() {
+	if s.cfg.Defaults.StickyByPrefix || s.cfg.CacheAffinityOn() {
 		fingerprint = plan.cacheFingerprint()
 	}
 	stickyKey := stickyKeyFrom(r.Header)
@@ -184,6 +184,20 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 		stickyKey = fingerprint
 	}
 	candidates := s.router.orderedCandidates(aliasName, &alias, stickyKey, fingerprint, time.Now())
+	for _, c := range candidates {
+		if c.upstream.cfg.KindValue() == UpstreamCLI && c.upstream.cfg.CLIModeValue() == CLIPersistent {
+			if stickyKey == "" {
+				stickyKey = plan.cacheFingerprint()
+			}
+			if stickyKey == "" {
+				s.writeError(w, http.StatusBadRequest, "session_required",
+					"persistent CLI upstream requires a session header or a non-empty messages prefix")
+				return
+			}
+			plan.sessionKey = stickyKey
+			break
+		}
+	}
 	if len(candidates) == 0 {
 		s.writeError(w, http.StatusServiceUnavailable, "no_targets", "every configured target is unavailable")
 		return
@@ -306,7 +320,7 @@ func (s *Server) finishLog(logger *slog.Logger, reqID, aliasName string, c candi
 		// estimate the router could make, so it is used as given.
 		rec.CostUSD, rec.CostSource = outcome.costUSD, "reported"
 	case outcome.hasUsage:
-		rec.CostUSD, rec.CostSource = s.cfg.Models[aliasName].Cost.Estimate(outcome.usage), "estimated"
+		rec.CostUSD, rec.CostSource = estimateCost(s.cfg.Models[aliasName].Cost, outcome.usage), "estimated"
 	default:
 		// No counts were reported, so no cost is claimed. An invented figure
 		// would be worse than an absent one. The store keeps the token columns
@@ -341,7 +355,7 @@ func (s *Server) attempt(
 ) (*http.Response, attemptOutcome, error) {
 	// A cli upstream is reached by running a command rather than by posting to a
 	// URL, so it takes its own path from here.
-	if c.upstream.cfg.kind() == UpstreamCLI {
+	if c.upstream.cfg.KindValue() == UpstreamCLI {
 		return s.attemptCLI(r.Context(), w, plan, c, logger)
 	}
 
@@ -422,7 +436,7 @@ func (s *Server) attempt(
 		n, err := s.relayStream(w, resp.Body, ctx, cancel, logger, &observer,
 			newStreamTranslator(plan.api, upstreamAPI, plan.alias))
 		outcome.bytes = n
-		outcome.usage, outcome.hasUsage = observer.usage, observer.found
+		outcome.usage, outcome.hasUsage = observer.Result()
 		if err != nil && r.Context().Err() == nil {
 			logger.Warn("stream interrupted", "upstream", c.upstream.name, "error", err.Error())
 		}

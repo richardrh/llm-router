@@ -1,6 +1,18 @@
-package main
+package wire
 
-import "fmt"
+import (
+	"fmt"
+
+	"llm-router/internal/config"
+)
+
+type APIProtocol = config.APIProtocol
+
+const (
+	APIOpenAICompletions = config.APIOpenAICompletions
+	APIOpenAIResponses   = config.APIOpenAIResponses
+	APIAnthropicMessages = config.APIAnthropicMessages
+)
 
 // Translation between wire protocols.
 //
@@ -12,9 +24,9 @@ import "fmt"
 // Only the two pairs that matter in practice are bridged. Anything else is
 // rejected at load time rather than half-supported.
 
-// translatable reports whether the router can bridge a client's wire to an
+// Translatable reports whether the router can bridge a client's wire to an
 // upstream's.
-func translatable(client, upstream APIProtocol) bool {
+func Translatable(client, upstream APIProtocol) bool {
 	if client == upstream {
 		return true
 	}
@@ -27,10 +39,10 @@ func translatable(client, upstream APIProtocol) bool {
 	return false
 }
 
-// streamTranslator converts one wire's SSE stream into another's. A nil
+// StreamTranslator converts one wire's SSE stream into another's. A nil
 // translator means the stream is copied through untouched, which is the default
 // and the only path that stays byte-transparent.
-type streamTranslator interface {
+type StreamTranslator interface {
 	// Write consumes upstream bytes and returns the bytes to send to the client.
 	// It may return nothing while it accumulates a partial event.
 	Write(p []byte) []byte
@@ -38,9 +50,9 @@ type streamTranslator interface {
 	Close() []byte
 }
 
-// translateRequest converts a request body from the client's wire to the
+// TranslateRequest converts a request body from the client's wire to the
 // upstream's.
-func translateRequest(client, upstream APIProtocol, body []byte) ([]byte, error) {
+func TranslateRequest(client, upstream APIProtocol, body []byte) ([]byte, error) {
 	switch {
 	case client == upstream:
 		return body, nil
@@ -52,10 +64,10 @@ func translateRequest(client, upstream APIProtocol, body []byte) ([]byte, error)
 	return nil, fmt.Errorf("no translation from %s to %s", client, upstream)
 }
 
-// translateResponse converts a complete, non-streaming response body from the
+// TranslateResponse converts a complete, non-streaming response body from the
 // upstream's wire back to the client's, reporting the alias in place of the
 // upstream's model id.
-func translateResponse(client, upstream APIProtocol, body []byte, alias string) ([]byte, error) {
+func TranslateResponse(client, upstream APIProtocol, body []byte, alias string) ([]byte, error) {
 	switch {
 	case client == upstream:
 		return body, nil
@@ -67,9 +79,9 @@ func translateResponse(client, upstream APIProtocol, body []byte, alias string) 
 	return nil, fmt.Errorf("no translation from %s to %s", upstream, client)
 }
 
-// newStreamTranslator returns the translator for a stream, or nil when the client
-// and the upstream share a wire and the stream can be relayed untouched.
-func newStreamTranslator(client, upstream APIProtocol, alias string) streamTranslator {
+// NewStreamTranslator returns the translator for a stream, or nil when the
+// client and the upstream share a wire and the stream can be relayed untouched.
+func NewStreamTranslator(client, upstream APIProtocol, alias string) StreamTranslator {
 	switch {
 	case client == upstream:
 		return nil
@@ -85,13 +97,4 @@ func newStreamTranslator(client, upstream APIProtocol, alias string) streamTrans
 // line is already committed by then, so the failure has to be reported in the
 // body; the client is told the shape it asked for, and the operator gets a log
 // line.
-var errTranslationFailed = []byte(`{"error":{"message":"the upstream response could not be translated","type":"router_translation_error"}}`)
-
-// upstreamAPI is the wire a target's upstream speaks. An unset target api means
-// it speaks whatever the client does, so nothing is translated.
-func (c candidate) upstreamAPI(clientAPI APIProtocol) APIProtocol {
-	if c.target.API != "" {
-		return c.target.API
-	}
-	return clientAPI
-}
+var ErrTranslationFailed = []byte(`{"error":{"message":"the upstream response could not be translated","type":"router_translation_error"}}`)

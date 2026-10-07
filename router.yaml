@@ -113,17 +113,20 @@ upstreams:
   # credentials, which it forbids. A cli upstream is refused at load if it carries
   # an apiKey, because there is nothing to give it.
   #
-  # The command must print Claude Code's `--output-format stream-json` NDJSON on
-  # stdout, and must contain "{prompt}" exactly once. Leave --bare out: it skips
-  # the subscription login and demands an API key instead, which defeats the
-  # point here.
+  # The command must read Claude Code's stream-JSON input on stdin and print
+  # stream-JSON NDJSON on stdout. The {model} placeholder is replaced once when
+  # a persistent session starts. Leave --bare out: it skips the subscription
+  # login and normal project configuration.
   #
   #   claude-code:
   #     kind: cli
-  #     command: [claude, -p, "{prompt}", --output-format, stream-json,
-  #               --verbose, --include-partial-messages]
-  #     maxConcurrency: 2      # each request is a process; keep this small
-  #     timeout: 10m
+  #     mode: persistent
+  #     command: [claude, -p, --input-format, stream-json,
+  #               --output-format, stream-json, --verbose,
+  #               --include-partial-messages, --model, "{model}"]
+  #     cwd: /path/to/project
+  #     maxSessions: 2
+  #     sessionIdleTimeout: 30m
 
 models:
   # --------------------------------------------------------------- Claude ----

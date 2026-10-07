@@ -1,4 +1,4 @@
-package main
+package router
 
 import (
 	"bytes"
@@ -33,6 +33,21 @@ func writeFakeCLI(t *testing.T, capturePath string) string {
 	}
 	if err := os.WriteFile(script, []byte(b.String()), 0o755); err != nil {
 		t.Fatalf("write fake cli: %v", err)
+	}
+	return script
+}
+
+func writePersistentFakeCLI(t *testing.T, capturePath string) string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "fake-claude-session")
+	content := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fake-session\"}'\nn=0\nwhile IFS= read -r line; do\n" +
+		"  printf '%s\\n' \"$line\" >> " + capturePath + "\n" +
+		"  n=$((n + 1))\n" +
+		"  printf '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"turn%s\"}}}\\n' \"$n\"\n" +
+		"  printf '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"turn%s\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\\n' \"$n\"\n" +
+		"done\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write persistent fake cli: %v", err)
 	}
 	return script
 }
@@ -81,6 +96,50 @@ func cliTestServer(t *testing.T, api APIProtocol, script string) (*Server, *byte
 	return NewServer(cfg, r, log, nil), &logs
 }
 
+func persistentCLITestServer(t *testing.T, script string) (*Server, *bytes.Buffer) {
+	t.Helper()
+	cfg := &Config{
+		Listen: "127.0.0.1:0",
+		Defaults: Defaults{
+			MaxAttempts:       1,
+			BreakerFailures:   100,
+			MaxBodyBytes:      1 << 20,
+			FirstByteTimeout:  Duration(20 * time.Second),
+			StreamIdleTimeout: Duration(20 * time.Second),
+			MaxStreamDuration: Duration(30 * time.Second),
+			RewriteModel:      true,
+			CacheAffinityTTL:  Duration(time.Minute),
+		},
+		Upstreams: map[string]Upstream{
+			"cli": {
+				Kind:           UpstreamCLI,
+				Mode:           CLIPersistent,
+				Command:        []string{script, "--model", "{model}", "-p", "--input-format", "stream-json", "--output-format", "stream-json"},
+				MaxConcurrency: 4,
+				MaxSessions:    2,
+				Timeout:        Duration(20 * time.Second),
+			},
+		},
+		Models: map[string]Alias{
+			"test-alias": {
+				API:             APIOpenAICompletions,
+				ContextWindow:   200000,
+				MaxOutputTokens: 8000,
+				Cost:            Cost{Input: 1, Output: 5},
+				Targets:         []Target{{Upstream: "cli", Model: "cli-model", Weight: 1}},
+			},
+		},
+	}
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	r, err := NewRouter(cfg, log)
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	t.Cleanup(r.Close)
+	return NewServer(cfg, r, log, nil), &logs
+}
+
 func cliPost(t *testing.T, srv *Server, path string, body map[string]any) (*http.Response, string) {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -94,6 +153,66 @@ func cliPost(t *testing.T, srv *Server, path string, body map[string]any) (*http
 	res := rec.Result()
 	out, _ := io.ReadAll(res.Body)
 	return res, string(out)
+}
+
+func cliPostWithHeaders(t *testing.T, srv *Server, path string, body map[string]any, headers map[string]string) (*http.Response, string) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	res := rec.Result()
+	out, _ := io.ReadAll(res.Body)
+	return res, string(out)
+}
+
+func TestPersistentCLIUpstreamKeepsAgentSession(t *testing.T) {
+	inputFile := filepath.Join(t.TempDir(), "inputs.ndjson")
+	script := writePersistentFakeCLI(t, inputFile)
+	srv, _ := persistentCLITestServer(t, script)
+	headers := map[string]string{"X-OMP-Session": "session-1"}
+
+	res, body := cliPostWithHeaders(t, srv, "/api/v1/chat/completions", map[string]any{
+		"model":    "test-alias",
+		"messages": []any{map[string]any{"role": "user", "content": "first"}},
+	}, headers)
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, `"content":"turn1"`) {
+		t.Fatalf("first response = %d %s", res.StatusCode, body)
+	}
+
+	res, body = cliPostWithHeaders(t, srv, "/api/v1/chat/completions", map[string]any{
+		"model": "test-alias",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "first"},
+			map[string]any{"role": "assistant", "content": "turn1"},
+			map[string]any{"role": "user", "content": "second"},
+		},
+	}, headers)
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, `"content":"turn2"`) {
+		t.Fatalf("second response = %d %s", res.StatusCode, body)
+	}
+
+	lines, err := os.ReadFile(inputFile)
+	if err != nil {
+		t.Fatalf("read captured inputs: %v", err)
+	}
+	captured := strings.Split(strings.TrimSpace(string(lines)), "\n")
+	if len(captured) != 2 {
+		t.Fatalf("captured %d messages, want 2: %q", len(captured), captured)
+	}
+	if !strings.Contains(captured[0], "first") || !strings.Contains(captured[1], "second") {
+		t.Fatalf("captured inputs = %q, want first then second", captured)
+	}
+	if strings.Contains(captured[1], "turn1") {
+		t.Fatalf("second input replayed the prior assistant response: %q", captured[1])
+	}
 }
 
 // TestCLIUpstreamServesCompletion: a cli upstream is reached by running a
@@ -304,5 +423,37 @@ models:
 				t.Fatal("an invalid cli command was accepted")
 			}
 		})
+	}
+}
+
+func TestPersistentCLIConfigUsesModelPlaceholder(t *testing.T) {
+	_, err := loadYAML(t, `upstreams:
+  c:
+    kind: cli
+    mode: persistent
+    command: [claude, -p, --input-format, stream-json, --model, "{model}"]
+models:
+  alias-one:
+    api: openai-completions
+    targets:
+      - {upstream: c, model: claude-sonnet, weight: 1}
+`)
+	if err != nil {
+		t.Fatalf("valid persistent CLI config rejected: %v", err)
+	}
+
+	_, err = loadYAML(t, `upstreams:
+  c:
+    kind: cli
+    mode: persistent
+    command: [claude, -p, "{prompt}"]
+models:
+  alias-one:
+    api: openai-completions
+    targets:
+      - {upstream: c, model: claude-sonnet, weight: 1}
+`)
+	if err == nil || !strings.Contains(err.Error(), "must not contain") {
+		t.Fatalf("persistent prompt placeholder error = %v", err)
 	}
 }

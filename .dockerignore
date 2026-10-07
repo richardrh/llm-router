@@ -1,0 +1,11 @@
+.git
+.gitignore
+.github
+docs/public
+docs/.hugo_build.lock
+llm-router
+*.db
+*.db-wal
+*.db-shm
+*.test
+*.out
