@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"llm-router/internal/config"
 )
 
 var (
@@ -131,7 +133,7 @@ func (m *cliSessionManager) closeAll() {
 }
 
 func startCLISession(key, model string, cfg Upstream, resumeID string) (*cliSession, error) {
-	argv, err := buildCLISessionCommand(cfg.Command, model, resumeID)
+	argv, err := buildCLISessionCommand(cfg.Command, model, resumeID, cfg.ToolMode)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +175,7 @@ func startCLISession(key, model string, cfg Upstream, resumeID string) (*cliSess
 	return session, nil
 }
 
-func buildCLISessionCommand(argv []string, model, resumeID string) ([]string, error) {
+func buildCLISessionCommand(argv []string, model, resumeID string, toolMode config.CLIToolMode) ([]string, error) {
 	if len(argv) == 0 || argv[0] == "" {
 		return nil, errors.New("CLI command is empty")
 	}
@@ -187,6 +189,9 @@ func buildCLISessionCommand(argv []string, model, resumeID string) ([]string, er
 		if strings.Contains(arg, "{model}") {
 			out[i] = strings.ReplaceAll(arg, "{model}", model)
 		}
+	}
+	if toolMode == config.CLIToolsClient {
+		out = append(out, "--tools", "")
 	}
 	if resumeID != "" {
 		out = append(out, "--resume", resumeID)
@@ -265,6 +270,9 @@ func (s *cliSession) run(ctx context.Context, firstPrompt, nextPrompt string, on
 				}
 				if err := event.apply(&result, &seenResult, onText); err != nil {
 					return cliRun{}, err
+				}
+				if event.Type == "result" && s.cfg.ToolMode == config.CLIToolsClient {
+					result.ToolCall, result.Text = parseClientEnvelope(result.Text)
 				}
 			}
 		}

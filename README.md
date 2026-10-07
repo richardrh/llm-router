@@ -223,8 +223,11 @@ are required.
 
 The older one-shot CLI mode remains available with a `{prompt}` placeholder,
 but it flattens the request and starts a fresh process per turn. Persistent
-mode is the normal Claude Code agent path. Client-supplied `tools` are not
-forwarded: Claude Code owns the tools and executes them inside its process.
+mode is the normal Claude Code agent path. By default Claude Code owns the
+tools. Set `toolMode: client` to have the router return validated
+`client_tool_request` calls as standard OpenAI `tool_calls` or Anthropic
+`tool_use` responses; the harness executes the tool and sends its result on the
+next non-streaming turn.
 
 For an ordinary completion API, use an [OpenRouter](https://openrouter.ai/keys)
 key for the one-endpoint many-provider case, or an Anthropic Console key for

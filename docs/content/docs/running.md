@@ -160,9 +160,11 @@ upstreams:
               --verbose, --include-partial-messages]
 ```
 
-It starts a fresh agent per request and flattens the conversation. Client
-supplied `tools` are not forwarded in either mode; Claude Code owns and
-executes its own tools inside the local process.
+It starts a fresh agent per request and flattens the conversation. Persistent
+mode normally lets Claude Code own its tools. Set `toolMode: client` on a
+persistent upstream to return validated `client_tool_request` calls as standard
+OpenAI `tool_calls` or Anthropic `tool_use` responses. The harness executes the
+tool and sends its result on the next non-streaming turn.
 
 For an ordinary completion API, use an [OpenRouter](https://openrouter.ai/keys)
 key for the one-endpoint many-provider case, or an Anthropic Console key for

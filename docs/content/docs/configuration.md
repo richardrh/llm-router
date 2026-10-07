@@ -18,6 +18,7 @@ knowing:
 | `upstreams.<name>.apiKeyEnv` | Env var holding the key. Preferred over `apiKey`. |
 | `upstreams.<name>.kind` | `http` (the default) or `cli`. |
 | `upstreams.<name>.mode` | `one-shot` (default) or `persistent` for a long-lived Claude Code session. |
+| `upstreams.<name>.toolMode` | `claude` (default) or `client`; `client` returns harness tool calls and requires non-streaming requests. |
 | `upstreams.<name>.command` | argv for a `cli` upstream; one-shot commands contain `{prompt}`, persistent commands may contain `{model}`. |
 | `upstreams.<name>.cwd` | Working directory for a CLI process; Claude Code discovers project configuration here. |
 | `upstreams.<name>.timeout` | Bounds one CLI turn. Defaults to `maxStreamDuration`. |

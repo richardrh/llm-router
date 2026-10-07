@@ -186,6 +186,11 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 	candidates := s.router.orderedCandidates(aliasName, &alias, stickyKey, fingerprint, time.Now())
 	for _, c := range candidates {
 		if c.upstream.cfg.KindValue() == UpstreamCLI && c.upstream.cfg.CLIModeValue() == CLIPersistent {
+			if c.upstream.cfg.ToolMode == CLIToolsClient && plan.stream {
+				s.writeError(w, http.StatusBadRequest, "client_tools_stream_unsupported",
+					"client tool mode requires a non-streaming request")
+				return
+			}
 			if stickyKey == "" {
 				stickyKey = plan.cacheFingerprint()
 			}

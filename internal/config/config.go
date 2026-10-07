@@ -160,6 +160,18 @@ func (m CLIMode) valid() bool {
 	return m == "" || m == CLIOneShot || m == CLIPersistent
 }
 
+// CLIToolMode selects which component executes tools for a CLI-backed session.
+type CLIToolMode string
+
+const (
+	CLIToolsClaude CLIToolMode = "claude"
+	CLIToolsClient CLIToolMode = "client"
+)
+
+func (m CLIToolMode) valid() bool {
+	return m == "" || m == CLIToolsClaude || m == CLIToolsClient
+}
+
 // defaultAnthropicVersion is the API version header Claude expects. It is
 // applied only when the upstream config does not set one itself.
 const defaultAnthropicVersion = "2023-06-01"
@@ -195,6 +207,8 @@ type Upstream struct {
 	Kind UpstreamKind `yaml:"kind"`
 	// Mode selects one process per request or one long-lived process per session.
 	Mode CLIMode `yaml:"mode"`
+	// ToolMode selects Claude-owned tools or harness-owned client tools.
+	ToolMode CLIToolMode `yaml:"toolMode"`
 	// WorkingDirectory is the process cwd. Claude Code discovers project
 	// settings, CLAUDE.md, hooks, and MCP configuration from this directory.
 	WorkingDirectory string `yaml:"cwd"`
@@ -394,6 +408,9 @@ func (c *Config) validate() error {
 			}
 			if !u.Mode.valid() {
 				add("upstream %q: unknown cli mode %q (want %q or %q)", name, u.Mode, CLIOneShot, CLIPersistent)
+			}
+			if !u.ToolMode.valid() {
+				add("upstream %q: unknown toolMode %q (want %q or %q)", name, u.ToolMode, CLIToolsClaude, CLIToolsClient)
 			}
 			if len(u.Command) == 0 {
 				add("upstream %q: command is required for a cli upstream", name)

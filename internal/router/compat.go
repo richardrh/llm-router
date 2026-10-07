@@ -20,6 +20,7 @@ type StoreConfig = config.StoreConfig
 type Upstream = config.Upstream
 type UpstreamKind = config.UpstreamKind
 type CLIMode = config.CLIMode
+type CLIToolMode = config.CLIToolMode
 type Alias = config.Alias
 type Target = config.Target
 type Cost = config.Cost
@@ -34,6 +35,7 @@ type Store = usage.Store
 type usageObserver = usage.Observer
 
 type capabilityTable = config.CapabilityTable
+type ToolCall = claudecode.ToolCall
 type cliRun = claudecode.Run
 type cliSessionManager = claudecode.SessionManager
 type streamTranslator = wire.StreamTranslator
@@ -50,6 +52,8 @@ const (
 	UpstreamCLI          = config.UpstreamCLI
 	CLIOneShot           = config.CLIOneShot
 	CLIPersistent        = config.CLIPersistent
+	CLIToolsClaude       = config.CLIToolsClaude
+	CLIToolsClient       = config.CLIToolsClient
 )
 
 func LoadConfig(path string) (*Config, error) { return config.LoadConfig(path) }
@@ -67,6 +71,12 @@ func newCLIPrompt(fields map[string]json.RawMessage) (string, error) {
 }
 func newCLILastPrompt(fields map[string]json.RawMessage) (string, error) {
 	return claudecode.BuildLastPrompt(fields)
+}
+func newCLIClientToolPrompt(fields map[string]json.RawMessage) (string, error) {
+	return claudecode.BuildClientToolPrompt(fields)
+}
+func newCLIContinuationPrompt(fields map[string]json.RawMessage) (string, error) {
+	return claudecode.BuildContinuationPrompt(fields)
 }
 func runCLICommand(ctx context.Context, argv []string, onText func(string) error) (cliRun, error) {
 	return claudecode.RunCommand(ctx, argv, onText)

@@ -121,6 +121,7 @@ upstreams:
   #   claude-code:
   #     kind: cli
   #     mode: persistent
+  #     toolMode: client        # return harness tool calls instead
   #     command: [claude, -p, --input-format, stream-json,
   #               --output-format, stream-json, --verbose,
   #               --include-partial-messages, --model, "{model}"]

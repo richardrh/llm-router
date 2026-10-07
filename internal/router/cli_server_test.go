@@ -52,6 +52,23 @@ func writePersistentFakeCLI(t *testing.T, capturePath string) string {
 	return script
 }
 
+func writeClientToolFakeCLI(t *testing.T) string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "fake-claude-client-tools")
+	content := "#!/bin/sh\nn=0\nwhile IFS= read -r line; do\n" +
+		"  n=$((n + 1))\n" +
+		"  if [ \"$n\" -eq 1 ]; then\n" +
+		"    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"{\\\"kind\\\":\\\"client_tool_request\\\",\\\"id\\\":\\\"call-1\\\",\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"q\\\":\\\"x\\\"}}\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}'\n" +
+		"  else\n" +
+		"    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"{\\\"kind\\\":\\\"final_response\\\",\\\"text\\\":\\\"done\\\"}\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}'\n" +
+		"  fi\n" +
+		"done\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write client tool fake cli: %v", err)
+	}
+	return script
+}
+
 // cliTestServer builds a server whose only alias is served by a cli upstream
 // running the given script.
 func cliTestServer(t *testing.T, api APIProtocol, script string) (*Server, *bytes.Buffer) {
@@ -114,6 +131,7 @@ func persistentCLITestServer(t *testing.T, script string) (*Server, *bytes.Buffe
 			"cli": {
 				Kind:           UpstreamCLI,
 				Mode:           CLIPersistent,
+				ToolMode:       CLIToolsClient,
 				Command:        []string{script, "--model", "{model}", "-p", "--input-format", "stream-json", "--output-format", "stream-json"},
 				MaxConcurrency: 4,
 				MaxSessions:    2,
@@ -212,6 +230,43 @@ func TestPersistentCLIUpstreamKeepsAgentSession(t *testing.T) {
 	}
 	if strings.Contains(captured[1], "turn1") {
 		t.Fatalf("second input replayed the prior assistant response: %q", captured[1])
+	}
+}
+
+func TestPersistentCLIUpstreamRoundTripsHarnessTool(t *testing.T) {
+	script := writeClientToolFakeCLI(t)
+	srv, _ := persistentCLITestServer(t, script)
+	headers := map[string]string{"X-OMP-Session": "tool-session"}
+	tools := []any{map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "lookup",
+			"description": "Look something up",
+			"parameters":  map[string]any{"type": "object"},
+		},
+	}}
+
+	res, body := cliPostWithHeaders(t, srv, "/api/v1/chat/completions", map[string]any{
+		"model":    "test-alias",
+		"tools":    tools,
+		"messages": []any{map[string]any{"role": "user", "content": "find x"}},
+	}, headers)
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, `"finish_reason":"tool_calls"`) || !strings.Contains(body, `"name":"lookup"`) {
+		t.Fatalf("tool request response = %d %s", res.StatusCode, body)
+	}
+
+	res, body = cliPostWithHeaders(t, srv, "/api/v1/chat/completions", map[string]any{
+		"model": "test-alias",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "find x"},
+			map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{
+				map[string]any{"id": "call-1", "type": "function", "function": map[string]any{"name": "lookup", "arguments": `{"q":"x"}`}},
+			}},
+			map[string]any{"role": "tool", "tool_call_id": "call-1", "content": "lookup result"},
+		},
+	}, headers)
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, `"content":"done"`) {
+		t.Fatalf("tool result response = %d %s", res.StatusCode, body)
 	}
 }
 

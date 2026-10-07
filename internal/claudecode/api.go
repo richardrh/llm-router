@@ -47,6 +47,14 @@ func BuildLastPrompt(fields map[string]json.RawMessage) (string, error) {
 	return newCLILastPrompt(fields)
 }
 
+func BuildClientToolPrompt(fields map[string]json.RawMessage) (string, error) {
+	return newCLIClientToolPrompt(fields)
+}
+
+func BuildContinuationPrompt(fields map[string]json.RawMessage) (string, error) {
+	return newCLIContinuationPrompt(fields)
+}
+
 func OpenAIResponse(r Run, alias string) []byte    { return cliOpenAIResponse(r, alias) }
 func AnthropicResponse(r Run, alias string) []byte { return cliAnthropicResponse(r, alias) }
 

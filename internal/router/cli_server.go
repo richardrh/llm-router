@@ -167,11 +167,15 @@ func (s *Server) attemptPersistentCLI(ctx context.Context, w http.ResponseWriter
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	firstPrompt, err := newCLIPrompt(plan.fields)
-	if err != nil {
-		return nil, attemptOutcome{}, fmt.Errorf("upstream %s: %w", c.upstream.name, err)
+	var firstPrompt, nextPrompt string
+	var err error
+	if c.upstream.cfg.ToolMode == CLIToolsClient {
+		firstPrompt, err = newCLIClientToolPrompt(plan.fields)
+		nextPrompt, err = newCLIContinuationPrompt(plan.fields)
+	} else {
+		firstPrompt, err = newCLIPrompt(plan.fields)
+		nextPrompt, err = newCLILastPrompt(plan.fields)
 	}
-	nextPrompt, err := newCLILastPrompt(plan.fields)
 	if err != nil {
 		return nil, attemptOutcome{}, fmt.Errorf("upstream %s: %w", c.upstream.name, err)
 	}
