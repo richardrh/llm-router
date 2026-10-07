@@ -48,6 +48,14 @@ against llm-router's instant bind. CPU was 0% for both while idle. Under load th
 difference is structural: the Go relay copies bytes; the Python proxy parses and
 re-serialises.
 
+![Measured idle footprint: llm-router 5.9 MB RSS vs LiteLLM 94.8 MB](docs/static/perf-comparison.svg)
+
+| Measured, idle (macOS, arm64, one worker) | llm-router | LiteLLM 1.104 proxy |
+| --- | --- | --- |
+| Idle RSS | 5.9 MB | 94.8 MB (parent + uvicorn worker) |
+| Idle CPU | 0% | 0% |
+| Launch → first bind | instant | ~25 s |
+
 The verdict: if you want provider breadth, virtual keys, budgets and a team
 console, LiteLLM is the more complete product and is MIT-licensed — use it. If
 you want one small proxy you can read in an afternoon and run anywhere, llm-router
