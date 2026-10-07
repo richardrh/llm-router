@@ -1,4 +1,4 @@
-package main
+package router
 
 import (
 	"crypto/sha256"
@@ -53,7 +53,7 @@ func NewRouter(cfg *Config, log *slog.Logger) (*Router, error) {
 		// A cli upstream holds no credential of its own: the command runs under
 		// the operator's login and owns its own token store. Resolving a key for
 		// it would be the very intermediation this design avoids.
-		if u.kind() == UpstreamCLI {
+		if u.KindValue() == UpstreamCLI {
 			r.upstreams[name] = newUpstreamState(name, u, "", cfg.Defaults.BreakerFailures)
 			continue
 		}
@@ -67,10 +67,19 @@ func NewRouter(cfg *Config, log *slog.Logger) (*Router, error) {
 		}
 		r.upstreams[name] = newUpstreamState(name, u, key, cfg.Defaults.BreakerFailures)
 	}
-	if cfg.cacheAffinityOn() {
+	if cfg.CacheAffinityOn() {
 		r.affinity = newCacheAffinity(cfg.Defaults.CacheAffinityTTL.Duration(), maxAffinityEntries)
 	}
 	return r, nil
+}
+
+// Close terminates persistent CLI sessions owned by the router.
+func (r *Router) Close() {
+	for _, upstream := range r.upstreams {
+		if upstream.sessions != nil {
+			upstream.sessions.CloseAll()
+		}
+	}
 }
 
 // candidate is one ordered attempt: which upstream, and which model id to ask
@@ -97,7 +106,7 @@ func (r *Router) orderedCandidates(aliasName string, alias *Alias, stickyKey, fi
 
 	first := -1
 	switch {
-	case stickyKey != "" && r.cfg.stickyFor(alias):
+	case stickyKey != "" && r.cfg.StickyFor(alias):
 		first = r.stickyIndex(aliasName, stickyKey, all, now)
 	default:
 		if first = r.affinityIndex(all, fingerprint, now); first < 0 {
@@ -130,18 +139,18 @@ func (r *Router) affinityIndex(all []candidate, fingerprint string, now time.Tim
 	total := 0
 	for i, c := range all {
 		// Failover-only targets are never chosen proactively, warm or not.
-		if c.target.weight() == 0 || !warm[c.upstream.name] || !c.upstream.available(now) {
+		if c.target.WeightValue() == 0 || !warm[c.upstream.name] || !c.upstream.available(now) {
 			continue
 		}
 		subset = append(subset, i)
-		total += c.target.weight()
+		total += c.target.WeightValue()
 	}
 	if len(subset) == 0 {
 		return -1
 	}
 	pick := rand.IntN(total)
 	for _, idx := range subset {
-		pick -= all[idx].target.weight()
+		pick -= all[idx].target.WeightValue()
 		if pick < 0 {
 			return idx
 		}
@@ -203,9 +212,9 @@ func (r *Router) weightedIndex(all []candidate, now time.Time) int {
 	healthy := make([]int, 0, len(all))
 	total := 0
 	for i, c := range all {
-		if c.target.weight() > 0 && c.upstream.available(now) {
+		if c.target.WeightValue() > 0 && c.upstream.available(now) {
 			healthy = append(healthy, i)
-			total += c.target.weight()
+			total += c.target.WeightValue()
 		}
 	}
 	if len(healthy) == 0 {
@@ -213,7 +222,7 @@ func (r *Router) weightedIndex(all []candidate, now time.Time) int {
 	}
 	pick := rand.IntN(total)
 	for _, idx := range healthy {
-		pick -= all[idx].target.weight()
+		pick -= all[idx].target.WeightValue()
 		if pick < 0 {
 			return idx
 		}
@@ -228,7 +237,7 @@ func (r *Router) weightedIndex(all []candidate, now time.Time) int {
 func declaredOrderIndex(all []candidate) int {
 	now := time.Now()
 	for i, c := range all {
-		if c.target.weight() > 0 && c.upstream.available(now) {
+		if c.target.WeightValue() > 0 && c.upstream.available(now) {
 			return i
 		}
 	}
@@ -238,7 +247,7 @@ func declaredOrderIndex(all []candidate) int {
 		}
 	}
 	for i := range all {
-		if all[i].target.weight() > 0 {
+		if all[i].target.WeightValue() > 0 {
 			return i
 		}
 	}
@@ -299,8 +308,12 @@ type requestPlan struct {
 	// api is the wire protocol the client spoke, which decides whether
 	// OpenAI-only conveniences like stream_options may be injected.
 	api APIProtocol
-	// fingerprint caches the conversation's prefix hash, computed once and
-	// shared by session pinning and cache observation.
+	// sessionKey is the stable client conversation key used by persistent CLI
+	// upstreams. It is populated from a session header or the conversation
+	// prefix when the client sends no header.
+	sessionKey string
+	// fingerprint caches the conversation's prefix hash, computed once per
+	// request.
 	fingerprint    string
 	fingerprintSet bool
 }
@@ -313,6 +326,13 @@ func (p *requestPlan) cacheFingerprint() string {
 		p.fingerprintSet = true
 	}
 	return p.fingerprint
+}
+
+func (c candidate) upstreamAPI(clientAPI APIProtocol) APIProtocol {
+	if c.target.API != "" {
+		return c.target.API
+	}
+	return clientAPI
 }
 
 func newRequestPlan(body []byte, maxBytes int64) (*requestPlan, error) {

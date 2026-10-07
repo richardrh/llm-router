@@ -1,4 +1,4 @@
-package main
+package claudecode
 
 import (
 	"bufio"
@@ -14,12 +14,20 @@ import (
 	"time"
 )
 
+// ToolCall is a harness-owned tool request emitted by client-tool mode.
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments json.RawMessage
+}
+
 // cliRun is the outcome of one CLI invocation.
 type cliRun struct {
-	Text    string
-	Usage   Usage
-	CostUSD float64
-	HasCost bool
+	Text     string
+	Usage    Usage
+	CostUSD  float64
+	HasCost  bool
+	ToolCall *ToolCall
 }
 
 // buildCLICommand substitutes the prompt for the {prompt} placeholder.
@@ -83,6 +91,32 @@ func newCLIPrompt(fields map[string]json.RawMessage) (string, error) {
 	return strings.Join(parts, "\n\n"), nil
 }
 
+// newCLILastPrompt extracts only the newest user turn for a persistent Claude
+// Code process. Claude Code already owns the preceding transcript.
+func newCLILastPrompt(fields map[string]json.RawMessage) (string, error) {
+	raw, ok := fields["messages"]
+	if !ok {
+		return "", errors.New("request has no messages")
+	}
+	var messages []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return "", fmt.Errorf("invalid messages: %w", err)
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		text := cliMessageText(messages[i].Content)
+		if strings.TrimSpace(text) != "" {
+			return text, nil
+		}
+	}
+	return "", errors.New("request contains no user text")
+}
+
 func cliMessageText(raw json.RawMessage) string {
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
@@ -102,6 +136,96 @@ func cliMessageText(raw json.RawMessage) string {
 		}
 	}
 	return out.String()
+}
+
+func parseClientEnvelope(text string) (*ToolCall, string) {
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "```") {
+		if i := strings.IndexByte(trimmed, '\n'); i >= 0 {
+			trimmed = strings.TrimSpace(trimmed[i+1:])
+		}
+		trimmed = strings.TrimSuffix(trimmed, "```")
+		trimmed = strings.TrimSpace(trimmed)
+	}
+	var envelope struct {
+		Kind      string          `json:"kind"`
+		ID        string          `json:"id"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		Text      string          `json:"text"`
+	}
+	if json.Unmarshal([]byte(trimmed), &envelope) != nil {
+		return nil, text
+	}
+	switch envelope.Kind {
+	case "client_tool_request":
+		if envelope.ID == "" || envelope.Name == "" || len(envelope.Arguments) == 0 {
+			return nil, text
+		}
+		return &ToolCall{ID: envelope.ID, Name: envelope.Name, Arguments: envelope.Arguments}, ""
+	case "final_response":
+		return nil, envelope.Text
+	default:
+		return nil, text
+	}
+}
+
+func newCLIClientToolPrompt(fields map[string]json.RawMessage) (string, error) {
+	prompt, err := newCLIPrompt(fields)
+	if err != nil {
+		return "", err
+	}
+	rawTools := fields["tools"]
+	if len(rawTools) == 0 {
+		return prompt, nil
+	}
+	return prompt + "\n\nExternal harness tool protocol:\n" +
+		"When you need a harness tool, output only JSON with kind " +
+		"client_tool_request, id, name, and arguments. When you are done, " +
+		"output only JSON with kind final_response and text. Available tools:\n" +
+		string(rawTools), nil
+}
+
+func newCLIContinuationPrompt(fields map[string]json.RawMessage) (string, error) {
+	raw, ok := fields["messages"]
+	if !ok {
+		return "", errors.New("request has no messages")
+	}
+	var messages []struct {
+		Role       string          `json:"role"`
+		Name       string          `json:"name"`
+		ToolCallID string          `json:"tool_call_id"`
+		Content    json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return "", fmt.Errorf("invalid messages: %w", err)
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.Role == "tool" {
+			return fmt.Sprintf("External tool result (%s): %s", m.ToolCallID, cliMessageText(m.Content)), nil
+		}
+		if m.Role != "user" {
+			continue
+		}
+		var blocks []struct {
+			Type    string          `json:"type"`
+			ID      string          `json:"tool_use_id"`
+			Content json.RawMessage `json:"content"`
+			Text    string          `json:"text"`
+		}
+		if json.Unmarshal(m.Content, &blocks) == nil {
+			for _, block := range blocks {
+				if block.Type == "tool_result" {
+					return fmt.Sprintf("External tool result (%s): %s", block.ID, cliMessageText(block.Content)), nil
+				}
+			}
+		}
+		if text := cliMessageText(m.Content); strings.TrimSpace(text) != "" {
+			return text, nil
+		}
+	}
+	return "", errors.New("request contains no user text")
 }
 
 const cliStderrLimit = 4 << 10
@@ -205,7 +329,7 @@ func runCLICommand(ctx context.Context, argv []string, onText func(string) error
 						result.HasCost = true
 					}
 					result.Usage = Usage{}
-					result.Usage.mergeFromJSON(line)
+					result.Usage.MergeFromJSON(line)
 					if event.IsError {
 						resultErr = errors.New("CLI returned an error result")
 					}
@@ -313,9 +437,19 @@ func (s *cliOpenAIStream) done(r cliRun) []byte {
 
 // cliOpenAIResponse builds a complete OpenAI chat.completion from a finished run.
 func cliOpenAIResponse(r cliRun, alias string) []byte {
+	message := map[string]interface{}{"role": "assistant", "content": r.Text}
+	finish := "stop"
+	if r.ToolCall != nil {
+		message["content"] = nil
+		message["tool_calls"] = []interface{}{map[string]interface{}{
+			"id": r.ToolCall.ID, "type": "function",
+			"function": map[string]interface{}{"name": r.ToolCall.Name, "arguments": string(r.ToolCall.Arguments)},
+		}}
+		finish = "tool_calls"
+	}
 	body := map[string]interface{}{
 		"id": fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()), "object": "chat.completion", "created": time.Now().Unix(), "model": alias,
-		"choices": []interface{}{map[string]interface{}{"index": 0, "message": map[string]interface{}{"role": "assistant", "content": r.Text}, "finish_reason": "stop"}},
+		"choices": []interface{}{map[string]interface{}{"index": 0, "message": message, "finish_reason": finish}},
 		"usage":   cliOpenAIUsage(r.Usage),
 	}
 	encoded, _ := json.Marshal(body)
@@ -331,10 +465,22 @@ func cliAnthropicResponse(r cliRun, alias string) []byte {
 	if r.Usage.CacheWriteTokens > 0 {
 		usage["cache_creation_input_tokens"] = r.Usage.CacheWriteTokens
 	}
+	content := []interface{}{map[string]interface{}{"type": "text", "text": r.Text}}
+	stop := "end_turn"
+	if r.ToolCall != nil {
+		var input interface{}
+		_ = json.Unmarshal(r.ToolCall.Arguments, &input)
+		content = []interface{}{map[string]interface{}{"type": "tool_use", "id": r.ToolCall.ID, "name": r.ToolCall.Name, "input": input}}
+		stop = "tool_use"
+	}
 	body := map[string]interface{}{
 		"id": fmt.Sprintf("msg-%d", time.Now().UnixNano()), "type": "message", "role": "assistant", "model": alias,
-		"content": []interface{}{map[string]interface{}{"type": "text", "text": r.Text}}, "stop_reason": "end_turn", "stop_sequence": nil, "usage": usage,
+		"content": content, "stop_reason": stop, "stop_sequence": nil, "usage": usage,
 	}
 	encoded, _ := json.Marshal(body)
 	return encoded
 }
+
+func (s *cliOpenAIStream) Start() []byte            { return s.start() }
+func (s *cliOpenAIStream) Text(delta string) []byte { return s.text(delta) }
+func (s *cliOpenAIStream) Done(r cliRun) []byte     { return s.done(r) }

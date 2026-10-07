@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -148,9 +148,35 @@ const (
 	UpstreamCLI UpstreamKind = "cli"
 )
 
+// CLIMode selects whether a CLI process handles one request or a session.
+type CLIMode string
+
+const (
+	CLIOneShot    CLIMode = "one-shot"
+	CLIPersistent CLIMode = "persistent"
+)
+
+func (m CLIMode) valid() bool {
+	return m == "" || m == CLIOneShot || m == CLIPersistent
+}
+
+// CLIToolMode selects which component executes tools for a CLI-backed session.
+type CLIToolMode string
+
+const (
+	CLIToolsClaude CLIToolMode = "claude"
+	CLIToolsClient CLIToolMode = "client"
+)
+
+func (m CLIToolMode) valid() bool {
+	return m == "" || m == CLIToolsClaude || m == CLIToolsClient
+}
+
 // defaultAnthropicVersion is the API version header Claude expects. It is
 // applied only when the upstream config does not set one itself.
 const defaultAnthropicVersion = "2023-06-01"
+
+const DefaultAnthropicVersion = defaultAnthropicVersion
 
 type Upstream struct {
 	BaseURL string `yaml:"baseUrl"`
@@ -167,19 +193,30 @@ type Upstream struct {
 	BodyPatch map[string]any `yaml:"bodyPatch"`
 	// BodyDrop removes top-level JSON body fields before dispatch.
 	BodyDrop []string `yaml:"bodyDrop"`
-	// MaxConcurrency caps in-flight requests. Full targets are skipped, not queued.
+	// MaxConcurrency caps in-flight turns. Full targets are skipped, not queued.
 	MaxConcurrency int `yaml:"maxConcurrency"`
+	// MaxSessions caps live processes for a persistent CLI upstream. Zero uses
+	// MaxConcurrency.
+	MaxSessions int `yaml:"maxSessions"`
+	// SessionIdleTimeout closes an inactive persistent CLI process. Zero leaves
+	// idle sessions alive until the router exits.
+	SessionIdleTimeout Duration `yaml:"sessionIdleTimeout"`
 
 	// Kind selects how this upstream is reached: "http" (the default) posts to
 	// BaseURL, "cli" runs Command as a local subprocess.
 	Kind UpstreamKind `yaml:"kind"`
-	// Command is the argv for a cli upstream, for example
-	// ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose",
-	// "--include-partial-messages"]. It must contain "{prompt}" exactly once;
-	// that element is replaced with the rendered conversation. The command must
-	// print Claude Code's stream-json NDJSON on stdout.
+	// Mode selects one process per request or one long-lived process per session.
+	Mode CLIMode `yaml:"mode"`
+	// ToolMode selects Claude-owned tools or harness-owned client tools.
+	ToolMode CLIToolMode `yaml:"toolMode"`
+	// WorkingDirectory is the process cwd. Claude Code discovers project
+	// settings, CLAUDE.md, hooks, and MCP configuration from this directory.
+	WorkingDirectory string `yaml:"cwd"`
+	// Command is the argv for a cli upstream. One-shot commands must contain
+	// "{prompt}" exactly once; persistent commands must not contain it and may
+	// use "{model}", substituted when a session starts.
 	Command []string `yaml:"command"`
-	// Timeout bounds one cli invocation. Defaults to maxStreamDuration.
+	// Timeout bounds one cli turn. It also bounds a one-shot invocation.
 	Timeout Duration `yaml:"timeout"`
 }
 
@@ -190,6 +227,15 @@ func (u Upstream) kind() UpstreamKind {
 		return UpstreamHTTP
 	}
 	return u.Kind
+}
+
+// cliMode reports the execution mode, preserving one-shot behavior for old
+// configurations that do not set mode.
+func (u Upstream) cliMode() CLIMode {
+	if u.Mode == "" {
+		return CLIOneShot
+	}
+	return u.Mode
 }
 
 type Alias struct {
@@ -298,9 +344,14 @@ func (c *Config) applyDefaults() {
 	}
 	// Assign through the map key: a range variable is a copy, so mutating it
 	// would leave every upstream at zero concurrency.
+	// Assign through the map key: a range variable is a copy, so mutating it
+	// would leave every upstream at zero concurrency.
 	for name, u := range c.Upstreams {
 		if u.MaxConcurrency == 0 {
 			u.MaxConcurrency = 8
+		}
+		if u.MaxSessions == 0 {
+			u.MaxSessions = u.MaxConcurrency
 		}
 		if u.AuthStyle == "" {
 			u.AuthStyle = AuthBearer
@@ -355,15 +406,27 @@ func (c *Config) validate() error {
 			if u.BaseURL != "" {
 				add("upstream %q: baseUrl is not used by a cli upstream", name)
 			}
+			if !u.Mode.valid() {
+				add("upstream %q: unknown cli mode %q (want %q or %q)", name, u.Mode, CLIOneShot, CLIPersistent)
+			}
+			if !u.ToolMode.valid() {
+				add("upstream %q: unknown toolMode %q (want %q or %q)", name, u.ToolMode, CLIToolsClaude, CLIToolsClient)
+			}
 			if len(u.Command) == 0 {
 				add("upstream %q: command is required for a cli upstream", name)
-			} else {
+			} else if u.cliMode() == CLIOneShot {
 				placeholders := 0
 				for _, arg := range u.Command {
 					placeholders += strings.Count(arg, "{prompt}")
 				}
 				if placeholders != 1 {
-					add("upstream %q: command must contain exactly one {prompt} placeholder, found %d", name, placeholders)
+					add("upstream %q: one-shot command must contain exactly one {prompt} placeholder, found %d", name, placeholders)
+				}
+			} else {
+				for _, arg := range u.Command {
+					if strings.Contains(arg, "{prompt}") {
+						add("upstream %q: persistent command must not contain the {prompt} placeholder", name)
+					}
 				}
 			}
 			// The whole point of a cli upstream is that the command already owns
@@ -417,7 +480,7 @@ func (c *Config) validate() error {
 			if t.API != "" {
 				if _, err := t.API.Path(); err != nil {
 					add("model %q target %d: %v", name, i, err)
-				} else if !translatable(a.API, t.API) {
+				} else if !Translatable(a.API, t.API) {
 					add("model %q target %d: no translation from client %s to upstream %s", name, i, a.API, t.API)
 				}
 			}
@@ -493,3 +556,31 @@ func (c *Config) upstreamsInOrder() []string {
 	sort.Strings(names)
 	return names
 }
+
+// Translatable reports whether the configured wire protocols can be bridged.
+func Translatable(client, upstream APIProtocol) bool {
+	if client == upstream {
+		return true
+	}
+	return (client == APIOpenAICompletions && upstream == APIAnthropicMessages) ||
+		(client == APIAnthropicMessages && upstream == APIOpenAICompletions)
+}
+
+// Kind returns the configured upstream kind, defaulting to HTTP.
+// KindValue returns the configured upstream kind, defaulting to HTTP.
+func (u Upstream) KindValue() UpstreamKind { return u.kind() }
+
+// CLIModeValue returns the configured CLI execution mode, defaulting to one-shot.
+func (u Upstream) CLIModeValue() CLIMode { return u.cliMode() }
+
+// WeightValue returns a non-negative target weight.
+func (t Target) WeightValue() int { return t.weight() }
+
+// StickyFor reports whether an alias uses session stickiness.
+func (c *Config) StickyFor(a *Alias) bool { return c.stickyFor(a) }
+
+// CacheAffinityOn reports whether cache-aware selection is enabled.
+func (c *Config) CacheAffinityOn() bool { return c.cacheAffinityOn() }
+
+// UpstreamsInOrder returns upstream names in deterministic order.
+func (c *Config) UpstreamsInOrder() []string { return c.upstreamsInOrder() }

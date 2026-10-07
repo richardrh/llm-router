@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o llm-router-${{ matrix.GOOS }}-${{ matrix.GOARCH }} .
+      - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o llm-router-${{ matrix.GOOS }}-${{ matrix.GOARCH }} ./cmd/llm-router
       - uses: actions/upload-artifact@v4
         with:
           name: llm-router-${{ matrix.GOOS }}-${{ matrix.GOARCH }}

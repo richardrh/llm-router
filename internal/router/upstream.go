@@ -1,4 +1,4 @@
-package main
+package router
 
 import (
 	"context"
@@ -12,13 +12,14 @@ import (
 )
 
 // upstreamState is the per-upstream runtime: credentials, a concurrency gate,
-// and the health state that keeps a dead provider out of rotation.
+// health state, and (for persistent CLI upstreams) live agent sessions.
 type upstreamState struct {
 	name string
 	cfg  Upstream
 	key  string
 
-	sem chan struct{}
+	sem      chan struct{}
+	sessions *cliSessionManager
 
 	// threshold is how many consecutive failures trip the breaker.
 	threshold int
@@ -37,13 +38,21 @@ func newUpstreamState(name string, cfg Upstream, key string, threshold int) *ups
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	return &upstreamState{
+	state := &upstreamState{
 		name:      name,
 		cfg:       cfg,
 		key:       key,
 		sem:       make(chan struct{}, concurrency),
 		threshold: threshold,
 	}
+	if cfg.KindValue() == UpstreamCLI && cfg.CLIModeValue() == CLIPersistent {
+		maxSessions := cfg.MaxSessions
+		if maxSessions < 1 {
+			maxSessions = concurrency
+		}
+		state.sessions = newCLISessionManager(cfg, maxSessions, cfg.SessionIdleTimeout.Duration())
+	}
+	return state
 }
 
 // acquire takes a concurrency slot without blocking. A saturated upstream is

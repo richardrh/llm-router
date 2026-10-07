@@ -14,6 +14,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"llm-router/internal/config"
+	routerpkg "llm-router/internal/router"
+	"llm-router/internal/usage"
 )
 
 func main() {
@@ -33,7 +37,7 @@ func run() error {
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	cfg, err := LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -48,9 +52,9 @@ func run() error {
 	}
 
 	if *checkOnly {
-		for _, name := range cfg.upstreamsInOrder() {
+		for _, name := range cfg.UpstreamsInOrder() {
 			u := cfg.Upstreams[name]
-			if u.kind() == UpstreamCLI {
+			if u.KindValue() == config.UpstreamCLI {
 				// No credential to report: the command owns it.
 				log.Info("upstream ok", "name", name, "kind", "cli", "command", strings.Join(u.Command, " "))
 				continue
@@ -68,7 +72,7 @@ func run() error {
 			a := cfg.Models[name]
 			targets := make([]string, 0, len(a.Targets))
 			for _, t := range a.Targets {
-				targets = append(targets, fmt.Sprintf("%s/%s(w=%d)", t.Upstream, t.Model, t.weight()))
+				targets = append(targets, fmt.Sprintf("%s/%s(w=%d)", t.Upstream, t.Model, t.WeightValue()))
 			}
 			log.Info("model ok", "alias", name, "api", string(a.API), "targets", targets)
 		}
@@ -76,11 +80,12 @@ func run() error {
 		return nil
 	}
 
-	router, err := NewRouter(cfg, log)
+	router, err := routerpkg.NewRouter(cfg, log)
 	if err != nil {
 		return err
 	}
-	store, err := openUsageStore(cfg, log)
+	defer router.Close()
+	store, err := usage.OpenStoreForConfig(cfg, log)
 	if err != nil {
 		return err
 	}
@@ -88,7 +93,7 @@ func run() error {
 	// store, so this needs no guard for the feature being off.
 	defer store.Close()
 
-	srv := NewServer(cfg, router, log, store)
+	srv := routerpkg.NewServer(cfg, router, log, store)
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -137,7 +142,7 @@ func run() error {
 	return httpSrv.Shutdown(ctx)
 }
 
-func sortedModelNames(cfg *Config) []string {
+func sortedModelNames(cfg *config.Config) []string {
 	names := make([]string, 0, len(cfg.Models))
 	for n := range cfg.Models {
 		names = append(names, n)

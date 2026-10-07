@@ -1,4 +1,4 @@
-package main
+package config
 
 // capabilities.json holds per-model facts: input/output limits, pricing per
 // million tokens, and capability flags.
@@ -43,6 +43,21 @@ const (
 	flagReasoning        = "reasoning"
 	flagFastMode         = "fastMode"
 )
+
+// Capability flags are exported for discovery responses.
+const (
+	FlagAdaptiveThinking = flagAdaptiveThinking
+	FlagThinkingAlwaysOn = flagThinkingAlwaysOn
+	FlagPromptCaching    = flagPromptCaching
+	FlagVision           = flagVision
+	FlagFunctionCalling  = flagFunctionCalling
+	FlagReasoning        = flagReasoning
+)
+
+type CapabilityTable = capabilityTable
+
+func LoadCapabilities() (*CapabilityTable, error) { return loadCapabilities() }
+func SupportedEfforts(f ModelFacts) []string      { return supportedEfforts(f) }
 
 // ModelFacts is what the router knows about one model.
 type ModelFacts struct {
@@ -131,6 +146,8 @@ func normalizeModelID(id string) string {
 	}
 	return strings.ReplaceAll(id, ".", "-")
 }
+
+func NormalizeModelID(id string) string { return normalizeModelID(id) }
 
 // checkTargetCapabilities compares one target against the model capability table
 // and reports findings through the caller's warn and fail sinks.

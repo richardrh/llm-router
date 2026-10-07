@@ -1,8 +1,10 @@
-package main
+package usage
 
 import (
 	"bytes"
 	"encoding/json"
+
+	"llm-router/internal/config"
 )
 
 // Usage is what a provider reported for one request, normalised across the two
@@ -29,12 +31,14 @@ func (u Usage) Total() int { return u.TotalInput() + u.OutputTokens }
 // Estimate prices a request in USD from the alias's declared per-million-token
 // rates. It is an estimate in the honest sense: it uses the provider's own token
 // counts, and the configured rates, and nothing else.
-func (c Cost) Estimate(u Usage) float64 {
+func Estimate(c config.Cost, u Usage) float64 {
 	return (float64(u.InputTokens)*c.Input +
 		float64(u.OutputTokens)*c.Output +
 		float64(u.CacheReadTokens)*c.CacheRead +
 		float64(u.CacheWriteTokens)*c.CacheWrite) / 1_000_000
 }
+
+func (u *Usage) MergeFromJSON(payload []byte) bool { return u.mergeFromJSON(payload) }
 
 // wireUsageFields is the union of the usage objects both providers emit. Every
 // field is a pointer so an absent field is distinguishable from a zero: the
@@ -130,10 +134,15 @@ func usageFromBody(body []byte) (Usage, bool) {
 	return u, true
 }
 
+func UsageFromBody(body []byte) (Usage, bool) { return usageFromBody(body) }
+
 // maxSSELine bounds the per-line buffer. A longer line is not a usage payload
 // the router cares about, and retaining it would let a misbehaving upstream grow
 // memory without limit.
-const maxSSELine = 64 << 10
+const (
+	maxSSELine = 64 << 10
+	MaxSSELine = maxSSELine
+)
 
 // usageObserver accumulates usage from a response without altering it. It is fed
 // the same bytes the client receives, so a byte-transparent relay can report
@@ -144,6 +153,12 @@ type usageObserver struct {
 	usage    Usage
 	found    bool
 }
+
+type Observer = usageObserver
+
+func (o *usageObserver) Result() (Usage, bool) { return o.usage, o.found }
+
+func (o *usageObserver) BufferLen() int { return len(o.partial) }
 
 // Write consumes a fragment of the response. It never fails and never blocks, so
 // it can sit directly in the relay loop.

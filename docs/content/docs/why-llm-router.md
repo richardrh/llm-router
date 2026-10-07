@@ -50,7 +50,7 @@ is the smaller tool for that job.
 
 What the code does, verified:
 
-- **Constant-time gateway key check.** `crypto/subtle.ConstantTimeCompare` in `server.go`, applied to inference and `/usage` alike.
+- **Constant-time gateway key check.** `crypto/subtle.ConstantTimeCompare` in `internal/router/server.go`, applied to inference and `/usage` alike.
 - **Client credentials are never relayed.** Inbound `Authorization`, `x-api-key` and `api-key` are dropped before dispatch; the target gets only its own configured key. An Anthropic-wire client's Claude key never reaches whichever provider the alias picks. Hop-by-hop headers are not forwarded.
 - **Secrets live in the environment.** `apiKeyEnv` is preferred; no key is required in `router.yaml`. On Kubernetes they come from a Secret, not the ConfigMap.
 - **cli upstreams store and proxy nothing.** A `kind: cli` upstream is rejected at load if it carries an `apiKey`. The unmodified Claude Code binary runs under your login and the router reads only its stdout — subscription credentials never pass through the proxy, which is also what Anthropic's policy requires.

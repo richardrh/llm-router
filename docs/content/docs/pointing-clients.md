@@ -36,3 +36,14 @@ modelRoles:
 **Anthropic-wire clients** (Claude Code, the Anthropic SDKs) point
 `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` and use the bare alias
 `claude-opus-5-5`. The router forwards those to Claude's native `/v1/messages`.
+
+For a persistent `kind: cli` alias, send a stable conversation header so the
+router can keep the same Claude Code process for every turn:
+
+```text
+X-OMP-Session: project-42
+```
+
+The router also accepts `X-Session-Id`, `X-Conversation-Id`, and
+`X-Sticky-Key`. Without one, it derives a key from the opening conversation
+prefix when the request contains messages.

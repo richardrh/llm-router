@@ -23,7 +23,7 @@ For `systemd`, use `Restart=on-failure`; the process expects to be supervised.
 ## From source
 
 ```bash
-go build -o llm-router .                   # requires Go 1.26 or newer
+go build -o llm-router ./cmd/llm-router   # requires Go 1.26 or newer
 export OPENROUTER_API_KEY=sk-or-...        # at least one provider
 export ANTHROPIC_API_KEY=sk-ant-...
 
@@ -130,20 +130,41 @@ to give it.
 upstreams:
   claude-code:
     kind: cli
-    command: [claude, -p, "{prompt}", --output-format, stream-json,
-              --verbose, --include-partial-messages]
-    maxConcurrency: 2      # each request is a process; keep this small
+    mode: persistent
+    command: [claude, -p, --input-format, stream-json,
+              --output-format, stream-json, --verbose,
+              --include-partial-messages, --model, "{model}"]
+    cwd: /path/to/project
+    maxSessions: 2
+    sessionIdleTimeout: 30m
 ```
 
-Leave `--bare` out: it skips the subscription login and demands an API key, which
-defeats the point. `codex exec` follows the same pattern for the OpenAI
-subscription, though Pi already supports that natively via `/login openai-codex`.
+Persistent mode keeps one unmodified Claude Code process per client session.
+Later turns are sent over its stream-JSON stdin protocol, so Claude Code keeps
+its normal system prompt, `CLAUDE.md`, hooks, skills, plugins, MCP servers,
+tools, subagents, context management and subscription login. Send a stable
+`X-OMP-Session` (or `X-Session-Id`/`X-Conversation-Id`) header; without one,
+the router derives a key from the conversation prefix.
 
-**Be honest about what this is.** A CLI upstream spawns a process per request,
-and `claude -p` is an *agent loop with its own tools*, not a chat model. The
-conversation is flattened into a single prompt, client-supplied tools are
-dropped, and every call pays the CLI's startup cost. It reaches a subscription;
-it does not make a subscription equivalent to a completion API.
+The target's `model` is substituted when the process starts and cannot change
+within that session. `cwd` controls project discovery. Leave `--bare` out:
+bare mode skips subscription login and most normal project configuration.
+
+The legacy one-shot form remains supported:
+
+```yaml
+upstreams:
+  claude-code:
+    kind: cli
+    command: [claude, -p, "{prompt}", --output-format, stream-json,
+              --verbose, --include-partial-messages]
+```
+
+It starts a fresh agent per request and flattens the conversation. Persistent
+mode normally lets Claude Code own its tools. Set `toolMode: client` on a
+persistent upstream to return validated `client_tool_request` calls as standard
+OpenAI `tool_calls` or Anthropic `tool_use` responses. The harness executes the
+tool and sends its result on the next non-streaming turn.
 
 For an ordinary completion API, use an [OpenRouter](https://openrouter.ai/keys)
 key for the one-endpoint many-provider case, or an Anthropic Console key for
