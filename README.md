@@ -167,6 +167,7 @@ knowing:
 | `defaults.*` | Retry budget, timeouts, sticky affinity, breaker thresholds. |
 | `store.path` | SQLite file for usage history. Empty keeps no history. |
 | `store.queueSize` | Records waiting to be written before they are dropped. |
+| `store.maxRows` | Records kept, oldest deleted first. `0` keeps everything. |
 | `upstreams.<name>.baseUrl` | Provider root; the protocol's path is appended. |
 | `upstreams.<name>.apiKeyEnv` | Env var holding the key. Preferred over `apiKey`. |
 | `upstreams.<name>.kind` | `http` (the default) or `cli`. |
@@ -333,6 +334,7 @@ alias, the upstream that answered, the tokens, the latency and the cost.
 store:
   path: ~/.omp-router/usage.db
   queueSize: 1024
+  maxRows: 130000        # about 10 MB, keeping the newest 130k requests
 ```
 
 Read it back through the router, with the same credential inference uses:
@@ -366,7 +368,20 @@ SELECT upstream, count(*), sum(cost_usd) FROM requests GROUP BY 1;
 records it. Budgets, keys and tenancy are a control plane, and deliberately
 absent.
 
-Four properties are worth knowing:
+Five properties are worth knowing:
+
+- **Retention is a ring.** Records are pruned as they are written — within one
+  flush, so a quarter of a second — anything older than the newest `maxRows`
+  being deleted. It is a row budget rather than a byte budget because a row count
+  is exact and predictable, and these rows are near-uniform at about 80 bytes, so
+  `maxRows: 130000` holds the table near 10 MB; `/usage` reports the real
+  `size_bytes` under `store` so the number can be tuned against a measurement
+  rather than a guess. Deleting does not shrink the file, because SQLite keeps
+  freed pages and reuses them — the file plateaus at the cap, which is what a
+  ceiling is for. The write-ahead log is bounded too, checkpointed every 64 pages
+  instead of the default 1000: left at the default it reached 3.7 MB against a
+  4 KB database, and now settles near 256 KB. `maxRows: 0` — the default — keeps
+  everything.
 
 - **A request whose provider reported nothing stores NULL, not zero.** The token
   columns are nullable precisely so that `SUM` cannot count spend that was never
@@ -512,7 +527,7 @@ serving both wires through a command and refusing an `apiKey` on one), the usage
 store (WAL actually applied through a URL-escaped DSN, a durable flush on close,
 sub-second ordering and range filtering, NULL rather than zero for unreported
 usage, grouped aggregates, refusal of a non-whitelisted group column,
-drop-rather-than-block under a full queue, idempotent close, and inertness when
-disabled), the `/usage` endpoint (report shapes, key enforcement, and rejection
-of bad windows, limits and group columns), and the YAML-on-disk path through
-`LoadConfig`.
+drop-rather-than-block under a full queue, idempotent close, the row budget as a
+ring across restarts, and inertness when disabled), the `/usage` endpoint
+(report shapes, key enforcement, and rejection of bad windows, limits and group
+columns), and the YAML-on-disk path through `LoadConfig`.

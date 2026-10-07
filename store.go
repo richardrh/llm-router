@@ -113,6 +113,13 @@ type Store struct {
 	closeErr  error
 	log       *slog.Logger
 	dropped   atomic.Uint64
+	// maxRows caps how many records are kept, oldest removed first. A row
+	// budget rather than a byte budget: it is exact, predictable, and these
+	// rows are near-uniform at roughly 80 bytes, so 130,000 of them is about
+	// 10 MB. Zero means no cap, and nothing is ever deleted.
+	maxRows int64
+	// pruned counts rows removed to stay under the cap.
+	pruned atomic.Uint64
 }
 
 // openUsageStore opens the configured usage database, or returns a nil store
@@ -122,7 +129,11 @@ func openUsageStore(cfg *Config, log *slog.Logger) (*Store, error) {
 	if cfg.Store.Path == "" {
 		return nil, nil
 	}
-	return OpenStore(cfg.Store.Path, cfg.Store.QueueSize, log)
+	return OpenStore(StoreOptions{
+		Path:      cfg.Store.Path,
+		QueueSize: cfg.Store.QueueSize,
+		MaxRows:   cfg.Store.MaxRows,
+	}, log)
 }
 
 // expandHome resolves a leading ~ so a config can name ~/.omp-router/usage.db
@@ -141,13 +152,25 @@ func expandHome(path string) (string, error) {
 	return filepath.Join(home, path[2:]), nil
 }
 
-// OpenStore opens or creates the usage database at path and starts the writer.
-// A zero queueSize takes the default.
-func OpenStore(path string, queueSize int, log *slog.Logger) (*Store, error) {
-	path, err := expandHome(path)
+// StoreOptions configures the usage database.
+type StoreOptions struct {
+	// Path is the SQLite file. Required.
+	Path string
+	// QueueSize bounds how many records may wait to be written. Zero takes the
+	// default.
+	QueueSize int
+	// MaxRows caps how many records are kept, oldest removed first. Zero means no
+	// cap and nothing is ever deleted.
+	MaxRows int64
+}
+
+// OpenStore opens or creates the usage database and starts the writer.
+func OpenStore(opts StoreOptions, log *slog.Logger) (*Store, error) {
+	path, err := expandHome(opts.Path)
 	if err != nil {
 		return nil, fmt.Errorf("usage store: %w", err)
 	}
+	queueSize := opts.QueueSize
 	if queueSize <= 0 {
 		queueSize = defaultUsageQueue
 	}
@@ -167,6 +190,12 @@ func OpenStore(path string, queueSize int, log *slog.Logger) (*Store, error) {
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "synchronous(NORMAL)")
+	// WAL grows with every small transaction unless it is checkpointed, and the
+	// default 1000-page threshold is far too high for this workload: measured at
+	// 3.7MB of write-ahead log against a 4KB database. Checkpointing every 64
+	// pages holds it near 256KB instead, which matters when the point of a row
+	// budget is a small footprint on disk.
+	q.Add("_pragma", "wal_autocheckpoint(64)")
 	dsn.RawQuery = q.Encode()
 
 	db, err := sql.Open("sqlite", dsn.String())
@@ -182,10 +211,16 @@ func OpenStore(path string, queueSize int, log *slog.Logger) (*Store, error) {
 	}
 
 	s := &Store{
-		db:   db,
-		ch:   make(chan UsageRecord, queueSize),
-		done: make(chan struct{}),
-		log:  log,
+		db:      db,
+		ch:      make(chan UsageRecord, queueSize),
+		done:    make(chan struct{}),
+		log:     log,
+		maxRows: opts.MaxRows,
+	}
+	// Enforce the cap before the first tick, so restarting after a burst trims
+	// straight away rather than after a minute of running over.
+	if err := s.enforceCap(); err != nil {
+		s.log.Warn("usage store: initial prune failed", "error", err)
 	}
 	go s.run()
 	return s, nil
@@ -257,6 +292,13 @@ func (s *Store) flush(batch []UsageRecord) {
 		// Logged, not returned: there is no caller left to fail. The rows are
 		// lost, which is the honest outcome when the database is unwritable.
 		s.log.Error("usage store: write failed", "rows", len(batch), "error", err)
+		return
+	}
+	// The cap is enforced with the writes rather than on a timer: it costs
+	// nothing while idle, keeps the table within one flush interval of the cap,
+	// and runs on the writer goroutine so it cannot race an insert.
+	if err := s.enforceCap(); err != nil {
+		s.log.Warn("usage store: prune failed", "error", err)
 	}
 }
 
@@ -285,6 +327,74 @@ func (s *Store) insert(batch []UsageRecord) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// StoreStats describes the usage database's footprint.
+type StoreStats struct {
+	Rows    int64  `json:"rows"`
+	MaxRows int64  `json:"max_rows"`
+	Pruned  uint64 `json:"pruned"`
+	// SizeBytes is what the file occupies, best effort. It does not shrink when
+	// rows are deleted, because SQLite keeps freed pages to reuse, so it tracks
+	// the high-water mark rather than the live data. Reported so the row budget
+	// can be tuned against a real number instead of an estimate.
+	SizeBytes int64 `json:"size_bytes"`
+}
+
+// Stats reports the current footprint.
+func (s *Store) Stats() (StoreStats, error) {
+	if s == nil {
+		return StoreStats{}, errUsageStoreDisabled
+	}
+	st := StoreStats{MaxRows: s.maxRows, Pruned: s.pruned.Load()}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM requests`).Scan(&st.Rows); err != nil {
+		return st, err
+	}
+	st.SizeBytes = s.fileSize()
+	return st, nil
+}
+
+// fileSize is the allocated size of the database. Best effort: it is
+// informational, so a failure to read it is not worth propagating.
+func (s *Store) fileSize() int64 {
+	var pages, pageSize int64
+	if err := s.db.QueryRow("PRAGMA page_count").Scan(&pages); err != nil {
+		return 0
+	}
+	if err := s.db.QueryRow("PRAGMA page_size").Scan(&pageSize); err != nil {
+		return 0
+	}
+	return pages * pageSize
+}
+
+// enforceCap deletes the oldest records while the table is over its row budget.
+// It runs on the writer goroutine, so it cannot race an insert for the
+// connection.
+func (s *Store) enforceCap() error {
+	if s.maxRows <= 0 {
+		return nil
+	}
+	var rows int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM requests`).Scan(&rows); err != nil {
+		return err
+	}
+	excess := rows - s.maxRows
+	if excess <= 0 {
+		return nil
+	}
+	// Ascending id is oldest first: ids are monotonic and AUTOINCREMENT means
+	// one is never reused after a delete.
+	res, err := s.db.Exec(
+		`DELETE FROM requests WHERE id IN (SELECT id FROM requests ORDER BY id ASC LIMIT ?)`,
+		excess)
+	if err != nil {
+		return err
+	}
+	removed, _ := res.RowsAffected()
+	s.pruned.Add(uint64(removed))
+	s.log.Info("usage store: pruned oldest records",
+		"removed", removed, "rows", rows-removed, "max_rows", s.maxRows)
+	return nil
 }
 
 // Close flushes what is queued and releases the database. It is safe on a nil
@@ -519,6 +629,9 @@ type usageResponse struct {
 	// could not keep up. It is reported so an under-count is visible rather than
 	// quietly wrong.
 	DroppedRecords uint64 `json:"dropped_records"`
+	// Store is the database's own footprint, so a retention budget can be
+	// checked against reality.
+	Store StoreStats `json:"store"`
 }
 
 // handleUsage serves the recorded usage. This is the router's own reporting
@@ -612,6 +725,13 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.Totals = totals
+
+	stats, err := s.store.Stats()
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "usage_query_failed", err.Error())
+		return
+	}
+	resp.Store = stats
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

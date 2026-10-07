@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,7 +22,15 @@ func discardStoreLog() *slog.Logger {
 // immediately would be racing it rather than testing it.
 func seedUsage(t *testing.T, path string, recs ...UsageRecord) *Store {
 	t.Helper()
-	s, err := OpenStore(path, 0, discardStoreLog())
+	return seedUsageOpts(t, StoreOptions{Path: path}, recs...)
+}
+
+// seedUsageOpts is seedUsage with control over the store's options, so the row
+// cap can be exercised. It writes, closes, and reopens: the cap is enforced at
+// open, which is exactly the restart path worth testing.
+func seedUsageOpts(t *testing.T, opts StoreOptions, recs ...UsageRecord) *Store {
+	t.Helper()
+	s, err := OpenStore(opts, discardStoreLog())
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
@@ -31,12 +40,30 @@ func seedUsage(t *testing.T, path string, recs ...UsageRecord) *Store {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	reopened, err := OpenStore(path, 0, discardStoreLog())
+	reopened, err := OpenStore(opts, discardStoreLog())
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	return reopened
+}
+
+// usageSequence builds count records with strictly increasing ids and
+// timestamps, starting at from, so tests can name exactly which records should
+// survive a prune.
+func usageSequence(base time.Time, from, count int) []UsageRecord {
+	recs := make([]UsageRecord, 0, count)
+	for i := range count {
+		recs = append(recs, UsageRecord{
+			Timestamp:     base.Add(time.Duration(i) * time.Second),
+			RequestID:     fmt.Sprintf("r%03d", from+i),
+			Alias:         "a",
+			Upstream:      "u",
+			UpstreamModel: "m",
+			CostSource:    "unreported",
+		})
+	}
+	return recs
 }
 
 // TestUsageStoreUsesWAL checks the DSN pragmas actually reached the driver.
@@ -60,6 +87,17 @@ func TestUsageStoreUsesWAL(t *testing.T) {
 	}
 	if busy == 0 {
 		t.Fatalf("busy_timeout = 0, want the configured 5000")
+	}
+
+	// The write-ahead log is part of the footprint on disk. Left at the default
+	// threshold it outgrew the database by three orders of magnitude, so the
+	// bound is asserted rather than assumed.
+	var checkpoint int
+	if err := s.db.QueryRow("PRAGMA wal_autocheckpoint").Scan(&checkpoint); err != nil {
+		t.Fatalf("PRAGMA wal_autocheckpoint: %v", err)
+	}
+	if checkpoint != 64 {
+		t.Errorf("wal_autocheckpoint = %d, want 64", checkpoint)
 	}
 }
 
@@ -267,7 +305,7 @@ func TestNilUsageStoreIsInert(t *testing.T) {
 }
 
 func TestUsageStoreCloseIsIdempotent(t *testing.T) {
-	s, err := OpenStore(filepath.Join(t.TempDir(), "usage.db"), 0, discardStoreLog())
+	s, err := OpenStore(StoreOptions{Path: filepath.Join(t.TempDir(), "usage.db")}, discardStoreLog())
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
@@ -276,6 +314,139 @@ func TestUsageStoreCloseIsIdempotent(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// waitForPruned blocks until the writer has processed every queued record and
+// enforced the cap. Flushes happen on a 250ms tick, so a prune test has to wait
+// rather than assume. It waits on the pruned total rather than the row count,
+// because the row count reaches the cap on the first flush while records are
+// still queued.
+func waitForPruned(t *testing.T, s *Store, want uint64) StoreStats {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stats, err := s.Stats()
+		if err != nil {
+			t.Fatalf("Stats: %v", err)
+		}
+		if stats.Pruned >= want {
+			return stats
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Pruned = %d, want %d", stats.Pruned, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestUsageStorePrunesToTheRowBudget is the retention contract: the cap is
+// enforced while running, and it is the oldest records that go.
+func TestUsageStorePrunesToTheRowBudget(t *testing.T) {
+	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	s, err := OpenStore(StoreOptions{
+		Path:    filepath.Join(t.TempDir(), "usage.db"),
+		MaxRows: 50,
+	}, discardStoreLog())
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	for _, r := range usageSequence(base, 0, 200) {
+		s.Record(r)
+	}
+
+	stats := waitForPruned(t, s, 150)
+	if stats.Rows != 50 {
+		t.Errorf("Rows = %d, want 50", stats.Rows)
+	}
+	if stats.MaxRows != 50 {
+		t.Errorf("MaxRows = %d, want 50", stats.MaxRows)
+	}
+	if stats.Pruned != 150 {
+		t.Errorf("Pruned = %d, want 150", stats.Pruned)
+	}
+	if stats.SizeBytes <= 0 {
+		t.Errorf("SizeBytes = %d, want the file's size", stats.SizeBytes)
+	}
+
+	rows, err := s.Recent(UsageFilter{Limit: 1000})
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(rows) != 50 {
+		t.Fatalf("got %d rows, want 50", len(rows))
+	}
+	// The newest must survive and the oldest must be r150. A cap that deleted
+	// arbitrary rows would satisfy the count but destroy recent history.
+	if rows[0].RequestID != "r199" {
+		t.Errorf("newest = %q, want r199", rows[0].RequestID)
+	}
+	if last := rows[len(rows)-1].RequestID; last != "r150" {
+		t.Errorf("oldest surviving = %q, want r150", last)
+	}
+}
+
+// TestUsageStoreRowBudgetIsARing checks the cap across restarts: it is a ring of
+// the newest N records, not a one-off trim.
+func TestUsageStoreRowBudgetIsARing(t *testing.T) {
+	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	opts := StoreOptions{Path: filepath.Join(t.TempDir(), "usage.db"), MaxRows: 20}
+
+	s := seedUsageOpts(t, opts, usageSequence(base, 0, 50)...)
+	// r030..r049 survived the first prune; five more arrive.
+	for _, r := range usageSequence(base.Add(time.Hour), 50, 5) {
+		s.Record(r)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := OpenStore(opts, discardStoreLog())
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	stats, err := reopened.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.Rows != 20 {
+		t.Fatalf("Rows = %d, want 20 after further arrivals", stats.Rows)
+	}
+	rows, err := reopened.Recent(UsageFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if rows[0].RequestID != "r054" {
+		t.Errorf("newest = %q, want r054", rows[0].RequestID)
+	}
+	if last := rows[len(rows)-1].RequestID; last != "r035" {
+		t.Errorf("oldest surviving = %q, want r035", last)
+	}
+}
+
+// TestUsageStoreWithoutACapKeepsEverything pins the default. No budget means
+// nothing is deleted: discarding a user's history unasked would be worse than an
+// unbounded file they can prune themselves.
+func TestUsageStoreWithoutACapKeepsEverything(t *testing.T) {
+	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	s := seedUsage(t, filepath.Join(t.TempDir(), "usage.db"), usageSequence(base, 0, 300)...)
+
+	stats, err := s.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.Rows != 300 {
+		t.Errorf("Rows = %d, want 300", stats.Rows)
+	}
+	if stats.Pruned != 0 {
+		t.Errorf("Pruned = %d, want 0", stats.Pruned)
+	}
+	if stats.MaxRows != 0 {
+		t.Errorf("MaxRows = %d, want 0", stats.MaxRows)
 	}
 }
 
@@ -355,6 +526,12 @@ func TestUsageEndpointServesReports(t *testing.T) {
 	}
 	if body.Totals.Unreported != 1 {
 		t.Errorf("totals.Unreported = %d, want 1", body.Totals.Unreported)
+	}
+	if body.Store.Rows != 2 {
+		t.Errorf("store.Rows = %d, want 2", body.Store.Rows)
+	}
+	if body.Store.SizeBytes <= 0 {
+		t.Errorf("store.SizeBytes = %d, want the file's size", body.Store.SizeBytes)
 	}
 
 	// Grouped view.

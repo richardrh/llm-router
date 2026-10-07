@@ -77,6 +77,10 @@ type StoreConfig struct {
 	// are dropped and counted, so a slow disk can never slow down or fail a
 	// request. Zero takes the default.
 	QueueSize int `yaml:"queueSize"`
+	// MaxRows caps how many records are kept, oldest deleted first, so the file
+	// cannot grow without bound. Rows are near-uniform at roughly 80 bytes, so
+	// 130000 is about 10 MB; /usage reports the real size. Zero keeps everything.
+	MaxRows int64 `yaml:"maxRows"`
 }
 
 type Defaults struct {
@@ -318,6 +322,9 @@ func (c *Config) validate() error {
 	// from the SQLite driver at startup.
 	if c.Store.QueueSize < 0 {
 		add("store.queueSize must not be negative")
+	}
+	if c.Store.MaxRows < 0 {
+		add("store.maxRows must not be negative")
 	}
 	if c.Store.Path != "" {
 		if info, err := os.Stat(c.Store.Path); err == nil && info.IsDir() {

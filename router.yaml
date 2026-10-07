@@ -68,6 +68,12 @@ defaults:
 store:
   path: ~/.omp-router/usage.db
   queueSize: 1024
+  # Keep only the newest 130000 requests, oldest deleted first. A row is about
+  # 80 bytes, so this holds the file near 10 MB; the write-ahead log is held
+  # near 256 KB on top. Pruned as records are written, so the cap is enforced
+  # within a flush. /usage reports the real size under "store".
+  # Set 0 to keep everything.
+  maxRows: 130000
 
 upstreams:
   openrouter:
