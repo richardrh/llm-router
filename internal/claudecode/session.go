@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"llm-router/internal/config"
+	"github.com/richardrh/llm-router/internal/config"
 )
 
 var (

@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"llm-router/internal/claudecode"
-	"llm-router/internal/config"
-	"llm-router/internal/usage"
-	"llm-router/internal/wire"
+	"github.com/richardrh/llm-router/internal/claudecode"
+	"github.com/richardrh/llm-router/internal/config"
+	"github.com/richardrh/llm-router/internal/usage"
+	"github.com/richardrh/llm-router/internal/wire"
 )
 
 type Config = config.Config

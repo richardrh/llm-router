@@ -93,6 +93,19 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ./llm-router                               # listen on 127.0.0.1:8787
 ```
 
+### Install with Go
+
+Requires Go 1.26 or newer:
+
+```bash
+go install github.com/richardrh/llm-router/cmd/llm-router@latest
+llm-router -config router.yaml
+```
+
+Tagged releases publish static binaries for Linux and macOS on amd64 and arm64,
+plus SHA-256 checksums, at
+[GitHub Releases](https://github.com/richardrh/llm-router/releases).
+
 Then talk to it exactly as you would to OpenRouter:
 
 ```bash
@@ -126,28 +139,30 @@ docker run --rm -p 8787:8787 \
   llm-router -config /etc/llm-router/router.yaml
 ```
 
-`docker run` never creates files it wasn't given, so with the usage store on a
-bind-mounted file (`store.path`) the SQLite history survives the container.
+Tagged releases also publish multi-architecture images to
+`ghcr.io/richardrh/llm-router`:
+
+```bash
+docker run --rm -p 8787:8787 \
+  -v "$PWD/router.yaml":/etc/llm-router/router.yaml:ro \
+  -e OPENROUTER_API_KEY \
+  ghcr.io/richardrh/llm-router:latest -config /etc/llm-router/router.yaml
+```
 
 ### Kubernetes
 
-`deploy/kubernetes.yaml` ships a working minimal config (one alias served by
-OpenRouter), a Deployment and a Service:
+`deploy/install.sh` applies the Deployment and Service, creates the Secret,
+uploads `router.yaml` as the ConfigMap, sets the image, and waits for rollout:
 
 ```bash
-kubectl apply -f deploy/kubernetes.yaml
-kubectl create secret generic llm-router-keys \
-  --from-literal=OPENROUTER_API_KEY=sk-or-...
-kubectl port-forward svc/llm-router 8787:8787
-# now the curl from "From source" works against 127.0.0.1:8787
+OPENROUTER_API_KEY=sk-or-... ./deploy/install.sh
 ```
 
-For the full multi-provider config, replace the ConfigMap with your own
-`router.yaml`:
+Use a release image and namespace explicitly:
 
 ```bash
-kubectl create configmap llm-router-config \
-  --from-file=router.yaml --dry-run=client -o yaml | kubectl apply -f -
+NAMESPACE=prod IMAGE=ghcr.io/richardrh/llm-router:v1.2.3 \
+  OPENROUTER_API_KEY=sk-or-... ./deploy/install.sh
 ```
 
 Two constraints are load-bearing, both stated in the manifest: the usage store
@@ -162,13 +177,15 @@ the platform is what it does not need: no database, no sidecar, no service mesh,
 one static binary probing on `/healthz`, config from a ConfigMap, keys from a
 Secret. `kubectl apply -f` and it runs.
 
-To publish the image the manifest expects:
+Tagged releases publish the image automatically through GitHub Actions. Create a
+version tag and push it:
 
 ```bash
-docker tag llm-router ghcr.io/<your-user>/llm-router:latest
-docker push ghcr.io/<your-user>/llm-router:latest
-# and update image: in deploy/kubernetes.yaml to match
+git tag v1.2.3
+git push origin v1.2.3
 ```
+
+The release workflow publishes binaries and the multi-architecture GHCR image.
 
 ### Credentials
 

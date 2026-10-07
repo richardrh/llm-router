@@ -1,19 +1,18 @@
 # llm-router on Kubernetes.
 #
-#   kubectl apply -f deploy/kubernetes.yaml
-#   kubectl create secret generic llm-router-keys \
-#     --from-literal=OPENROUTER_API_KEY=sk-or-... \
-#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...   # only if the config uses it
+# One-command install from a checkout:
 #
-# The ConfigMap below is a working minimal config: one alias served by
-# OpenRouter. Replace it with the full router.yaml (kubectl create configmap
-# llm-router-config --from-file=router.yaml --dry-run=client -o yaml | kubectl
-# apply -f -) to get multi-provider failover and wire translation.
+#   OPENROUTER_API_KEY=sk-or-... ./deploy/install.sh
 #
-# The usage store is a local SQLite file on an emptyDir, so it lives and dies
-# with the pod; use a PVC if you want it to survive restarts. Replicas must stay
-# at 1: each replica keeps its own store, session pins and cache-affinity
-# observations in-process.
+# Optional:
+#   NAMESPACE=prod IMAGE=ghcr.io/richardrh/llm-router:v1.2.3 \
+#     OPENROUTER_API_KEY=sk-or-... ./deploy/install.sh
+#
+# The installer applies this manifest, creates the Secret, replaces the
+# bootstrap ConfigMap with router.yaml, sets the requested image, and waits for
+# the Deployment rollout. Direct `kubectl apply` still works with the minimal
+# bootstrap ConfigMap below.
+# SQLite usage storage is on emptyDir; use a PVC if persistence is required.
 ---
 apiVersion: v1
 kind: ConfigMap

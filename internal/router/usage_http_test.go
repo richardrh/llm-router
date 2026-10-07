@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"llm-router/internal/usage"
+	"github.com/richardrh/llm-router/internal/usage"
 )
 
 func seedUsage(t *testing.T, path string, recs ...UsageRecord) *Store {

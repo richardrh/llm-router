@@ -3,7 +3,7 @@ package wire
 import (
 	"fmt"
 
-	"llm-router/internal/config"
+	"github.com/richardrh/llm-router/internal/config"
 )
 
 type APIProtocol = config.APIProtocol

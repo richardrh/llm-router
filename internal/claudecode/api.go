@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"llm-router/internal/config"
-	"llm-router/internal/usage"
+	"github.com/richardrh/llm-router/internal/config"
+	"github.com/richardrh/llm-router/internal/usage"
 )
 
 // Run is the result of one Claude Code turn.

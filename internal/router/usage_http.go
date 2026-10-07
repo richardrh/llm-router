@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"llm-router/internal/usage"
+	"github.com/richardrh/llm-router/internal/usage"
 )
 
 type usageResponse struct {

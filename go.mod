@@ -1,4 +1,4 @@
-module llm-router
+module github.com/richardrh/llm-router
 
 go 1.26.0
 

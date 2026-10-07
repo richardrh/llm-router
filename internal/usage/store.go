@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"llm-router/internal/config"
+	"github.com/richardrh/llm-router/internal/config"
 
 	_ "modernc.org/sqlite"
 )

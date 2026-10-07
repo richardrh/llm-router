@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"llm-router/internal/config"
+	"github.com/richardrh/llm-router/internal/config"
 )
 
 // Usage is what a provider reported for one request, normalised across the two

@@ -15,9 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"llm-router/internal/config"
-	routerpkg "llm-router/internal/router"
-	"llm-router/internal/usage"
+	"github.com/richardrh/llm-router/internal/config"
+	routerpkg "github.com/richardrh/llm-router/internal/router"
+	"github.com/richardrh/llm-router/internal/usage"
 )
 
 func main() {
