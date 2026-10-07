@@ -94,6 +94,12 @@ keep `replicas: 1`, because each replica keeps its own SQLite file, session pins
 and cache-affinity observations — running several would fork the accounting and
 the pinning without any of them being wrong.
 
+To be precise about "Kubernetes-native": there is no operator, no CRDs, no
+HPA — `replicas: 1` is a real constraint, not a placeholder. What makes it fit
+the platform is what it does not need: no database, no sidecar, no service mesh,
+one static binary probing on `/healthz`, config from a ConfigMap, keys from a
+Secret. `kubectl apply -f` and it runs.
+
 ## Credentials
 
 An **http** upstream authenticates with an API key, taken from the environment
