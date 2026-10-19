@@ -113,7 +113,7 @@ func cliTestServer(t *testing.T, api APIProtocol, script string) (*Server, *byte
 	return NewServer(cfg, r, log, nil), &logs
 }
 
-func persistentCLITestServer(t *testing.T, script string) (*Server, *bytes.Buffer) {
+func persistentCLITestServer(t *testing.T, script string, configure ...func(*Config)) (*Server, *bytes.Buffer) {
 	t.Helper()
 	cfg := &Config{
 		Listen: "127.0.0.1:0",
@@ -147,6 +147,9 @@ func persistentCLITestServer(t *testing.T, script string) (*Server, *bytes.Buffe
 				Targets:         []Target{{Upstream: "cli", Model: "cli-model", Weight: 1}},
 			},
 		},
+	}
+	for _, apply := range configure {
+		apply(cfg)
 	}
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))

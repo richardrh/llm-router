@@ -17,8 +17,9 @@ import (
 )
 
 var (
-	errCLISessionBusy = errors.New("CLI session limit reached")
-	errCLISessionLost = errors.New("CLI session process exited")
+	errCLISessionBusy   = errors.New("CLI session limit reached")
+	errCLISessionLost   = errors.New("CLI session process exited")
+	errCLISessionClosed = errors.New("CLI session was retired before the turn began")
 )
 
 type cliSessionManager struct {
@@ -28,6 +29,7 @@ type cliSessionManager struct {
 	cfg         Upstream
 	maxSessions int
 	idleTimeout time.Duration
+	generation  uint64
 }
 
 func newCLISessionManager(cfg Upstream, maxSessions int, idleTimeout time.Duration) *cliSessionManager {
@@ -52,47 +54,88 @@ type cliSession struct {
 	stdin     io.WriteCloser
 	stdout    io.ReadCloser
 	reader    *bufio.Reader
-	stderr    *cliStderr
-	done      chan error
-	turnMu    sync.Mutex
+	stderr    *cliSessionStderr
+	done      chan struct{}
+	closeDone chan struct{}
+	turn      chan struct{}
 	mu        sync.Mutex
 	last      time.Time
 	closed    bool
 	turns     int
 	sessionID string
+	// users includes active and queued turns and is protected by the manager's mutex.
+	users int
+}
+
+type cliSessionStderr struct {
+	mu  sync.Mutex
+	log cliStderr
+}
+
+func (s *cliSessionStderr) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.log.Write(p)
+}
+
+func (s *cliSessionStderr) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.log.String()
 }
 
 func (m *cliSessionManager) run(ctx context.Context, key, model, firstPrompt, nextPrompt string, onText func(string) error) (cliRun, error) {
-	session, err := m.session(key, model)
-	if err != nil {
-		return cliRun{}, err
+	m.mu.Lock()
+	generation := m.generation
+	m.mu.Unlock()
+	for {
+		if err := ctx.Err(); err != nil {
+			return cliRun{}, err
+		}
+		session, err := m.session(key, model, generation)
+		if err != nil {
+			return cliRun{}, err
+		}
+		run, err := session.run(ctx, firstPrompt, nextPrompt, onText)
+		if session.isClosed() {
+			m.remove(key, session)
+		}
+		m.mu.Lock()
+		session.users--
+		session.touch()
+		m.mu.Unlock()
+		if errors.Is(err, errCLISessionClosed) {
+			continue
+		}
+		return run, err
 	}
-	run, err := session.run(ctx, firstPrompt, nextPrompt, onText)
-	if err != nil && errors.Is(err, errCLISessionLost) {
-		m.remove(key, session)
-	}
-	return run, err
 }
 
-func (m *cliSessionManager) session(key, model string) (*cliSession, error) {
+func (m *cliSessionManager) session(key, model string, generation uint64) (*cliSession, error) {
 	if strings.TrimSpace(key) == "" {
 		return nil, errors.New("persistent CLI upstream requires a session key")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if session, ok := m.sessions[key]; ok {
-		if m.idleTimeout > 0 && time.Since(session.touched()) > m.idleTimeout {
-			delete(m.sessions, key)
+	if generation != m.generation {
+		return nil, errCLISessionLost
+	}
+	for existingKey, session := range m.sessions {
+		if session.isClosed() || (session.users == 0 && m.idleTimeout > 0 && time.Since(session.touched()) > m.idleTimeout) {
+			delete(m.sessions, existingKey)
 			if id := session.id(); id != "" {
-				m.resume[key] = id
+				m.resume[existingKey] = id
 			}
 			session.close()
-		} else if session.model != model {
-			return nil, fmt.Errorf("CLI session %q is already bound to model %q", key, session.model)
-		} else {
-			return session, nil
 		}
+	}
+	if session, ok := m.sessions[key]; ok {
+		if session.model != model {
+			return nil, fmt.Errorf("CLI session %q is already bound to model %q", key, session.model)
+		}
+		session.users++
+		return session, nil
 	}
 	if len(m.sessions) >= m.maxSessions {
 		return nil, errCLISessionBusy
@@ -103,6 +146,7 @@ func (m *cliSessionManager) session(key, model string) (*cliSession, error) {
 		return nil, err
 	}
 	delete(m.resume, key)
+	session.users = 1
 	m.sessions[key] = session
 	return session, nil
 }
@@ -121,6 +165,7 @@ func (m *cliSessionManager) remove(key string, session *cliSession) {
 
 func (m *cliSessionManager) closeAll() {
 	m.mu.Lock()
+	m.generation++
 	sessions := make([]*cliSession, 0, len(m.sessions))
 	for key, session := range m.sessions {
 		delete(m.sessions, key)
@@ -151,7 +196,7 @@ func startCLISession(key, model string, cfg Upstream, resumeID string) (*cliSess
 		_ = stdin.Close()
 		return nil, fmt.Errorf("capture CLI stdout: %w", err)
 	}
-	stderr := &cliStderr{}
+	stderr := &cliSessionStderr{}
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
@@ -160,18 +205,27 @@ func startCLISession(key, model string, cfg Upstream, resumeID string) (*cliSess
 	}
 
 	session := &cliSession{
-		key:    key,
-		model:  model,
-		cfg:    cfg,
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: stdout,
-		reader: bufio.NewReader(stdout),
-		stderr: stderr,
-		done:   make(chan error, 1),
-		last:   time.Now(),
+		key:       key,
+		model:     model,
+		cfg:       cfg,
+		cmd:       cmd,
+		stdin:     stdin,
+		stdout:    stdout,
+		reader:    bufio.NewReader(stdout),
+		stderr:    stderr,
+		done:      make(chan struct{}),
+		closeDone: make(chan struct{}),
+		turn:      make(chan struct{}, 1),
+		last:      time.Now(),
+		sessionID: resumeID,
 	}
-	go func() { session.done <- cmd.Wait() }()
+	if resumeID != "" {
+		session.turns = 1
+	}
+	go func() {
+		_ = cmd.Wait()
+		close(session.done)
+	}()
 	return session, nil
 }
 
@@ -211,18 +265,33 @@ func (s *cliSession) id() string {
 	return s.sessionID
 }
 
+func (s *cliSession) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
 func (s *cliSession) touch() {
 	s.mu.Lock()
 	s.last = time.Now()
 	s.mu.Unlock()
 }
 
-func (s *cliSession) run(ctx context.Context, firstPrompt, nextPrompt string, onText func(string) error) (cliRun, error) {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
-	s.touch()
-
+func (s *cliSession) run(ctx context.Context, firstPrompt, nextPrompt string, onText func(string) error) (result cliRun, err error) {
+	select {
+	case s.turn <- struct{}{}:
+		defer func() { <-s.turn }()
+	case <-ctx.Done():
+		return cliRun{}, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return cliRun{}, err
+	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return cliRun{}, errCLISessionClosed
+	}
 	prompt := nextPrompt
 	if s.turns == 0 {
 		prompt = firstPrompt
@@ -240,22 +309,33 @@ func (s *cliSession) run(ctx context.Context, firstPrompt, nextPrompt string, on
 	if err != nil {
 		return cliRun{}, err
 	}
+	cancelStop := make(chan struct{})
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		select {
+		case <-ctx.Done():
+			s.close()
+		case <-cancelStop:
+		case <-s.done:
+		}
+	}()
+	incomplete := true
+	defer func() {
+		close(cancelStop)
+		<-cancelDone
+		if ctx.Err() != nil {
+			result, err = cliRun{}, ctx.Err()
+			incomplete = true
+		}
+		if incomplete {
+			s.close()
+		}
+	}()
 	if _, err := s.stdin.Write(append(body, '\n')); err != nil {
 		return cliRun{}, cliCommandError("write CLI input", err, s.stderr.String())
 	}
 
-	cancelDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			killCLIProcess(s.cmd)
-		case <-cancelDone:
-		case <-s.done:
-		}
-	}()
-	defer close(cancelDone)
-
-	var result cliRun
 	seenResult := false
 	reader := s.reader
 	for {
@@ -268,20 +348,24 @@ func (s *cliSession) run(ctx context.Context, firstPrompt, nextPrompt string, on
 					s.sessionID = event.SessionID
 					s.mu.Unlock()
 				}
-				if err := event.apply(&result, &seenResult, onText); err != nil {
-					return cliRun{}, err
+				applyErr := event.apply(&result, &seenResult, onText)
+				if seenResult {
+					s.mu.Lock()
+					s.turns++
+					s.mu.Unlock()
+					incomplete = false
+					if applyErr != nil {
+						return cliRun{}, applyErr
+					}
+					if s.cfg.ToolMode == config.CLIToolsClient {
+						result.ToolCall, result.Text = parseClientEnvelope(result.Text)
+					}
+					return result, nil
 				}
-				if event.Type == "result" && s.cfg.ToolMode == config.CLIToolsClient {
-					result.ToolCall, result.Text = parseClientEnvelope(result.Text)
+				if applyErr != nil {
+					return cliRun{}, applyErr
 				}
 			}
-		}
-		if seenResult {
-			s.mu.Lock()
-			s.turns++
-			s.last = time.Now()
-			s.mu.Unlock()
-			return result, nil
 		}
 		if readErr != nil {
 			if ctx.Err() != nil {
@@ -299,6 +383,7 @@ func (s *cliSession) close() {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		<-s.closeDone
 		return
 	}
 	s.closed = true
@@ -310,6 +395,7 @@ func (s *cliSession) close() {
 	case <-s.done:
 	case <-time.After(time.Second):
 	}
+	close(s.closeDone)
 }
 
 // cliEvent is the subset of Claude Code's stream-json protocol needed by the

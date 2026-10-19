@@ -3,6 +3,8 @@ title: Design notes
 weight: 7
 ---
 
+# Design notes
+
 **Failover happens strictly before the first response byte is committed.** The
 request body is buffered (bounded by `maxBodyBytes`) so it can be replayed
 against the next target. Once a status line is written, the response belongs to

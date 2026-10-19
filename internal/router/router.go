@@ -173,10 +173,9 @@ func (r *Router) allCandidates(aliasName string, alias *Alias) []candidate {
 	return out
 }
 
-// prefixStickyKey derives a stable conversation key when the client sends no
-// session header. It hashes the opening messages rather than the whole body:
-// a conversation is append-only, so its opening turn is identical across every
-// later turn, which is exactly the span a provider prompt cache keys on.
+// prefixStickyKey hashes the opening prefix through the first user message.
+// Assistant replies must not participate: they do not exist on the first turn.
+// Including the user message also separates conversations sharing system text.
 func (p *requestPlan) prefixStickyKey() string {
 	raw, ok := p.fields["messages"]
 	if !ok {
@@ -189,13 +188,20 @@ func (p *requestPlan) prefixStickyKey() string {
 	h := sha256.New()
 	h.Write([]byte(p.alias))
 	h.Write([]byte{0})
-	// Opening turn plus the first reply: together they identify a conversation
-	// while staying byte-identical as the transcript grows.
-	for _, m := range messages[:min(len(messages), 2)] {
+	for _, m := range messages {
+		var message struct {
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(m, &message); err != nil {
+			return ""
+		}
 		h.Write(truncate(m, 4096))
 		h.Write([]byte{0})
+		if message.Role == "user" {
+			return hex.EncodeToString(h.Sum(nil)[:16])
+		}
 	}
-	return hex.EncodeToString(h.Sum(nil)[:16])
+	return ""
 }
 
 func truncate(b []byte, max int) []byte {

@@ -172,37 +172,25 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 		return
 	}
 
-	// The prefix hash serves both session pinning and cache observation, and
-	// costs a hash of the opening turn, so it is computed only when one of them
-	// will use it.
+	// Cache observation and headerless sessions share the opening-prefix hash.
 	var fingerprint string
 	if s.cfg.Defaults.StickyByPrefix || s.cfg.CacheAffinityOn() {
 		fingerprint = plan.cacheFingerprint()
 	}
 	stickyKey := stickyKeyFrom(r.Header)
-	if stickyKey == "" && s.cfg.Defaults.StickyByPrefix {
-		stickyKey = fingerprint
-	}
-	candidates := s.router.orderedCandidates(aliasName, &alias, stickyKey, fingerprint, time.Now())
-	for _, c := range candidates {
-		if c.upstream.cfg.KindValue() == UpstreamCLI && c.upstream.cfg.CLIModeValue() == CLIPersistent {
-			if c.upstream.cfg.ToolMode == CLIToolsClient && plan.stream {
-				s.writeError(w, http.StatusBadRequest, "client_tools_stream_unsupported",
-					"client tool mode requires a non-streaming request")
-				return
-			}
-			if stickyKey == "" {
-				stickyKey = plan.cacheFingerprint()
-			}
-			if stickyKey == "" {
-				s.writeError(w, http.StatusBadRequest, "session_required",
-					"persistent CLI upstream requires a session header or a non-empty messages prefix")
-				return
-			}
-			plan.sessionKey = stickyKey
+	needsSession := false
+	for _, target := range alias.Targets {
+		upstream := s.router.upstreams[target.Upstream]
+		if upstream != nil && upstream.cfg.KindValue() == UpstreamCLI && upstream.cfg.CLIModeValue() == CLIPersistent {
+			needsSession = true
 			break
 		}
 	}
+	if stickyKey == "" && (s.cfg.Defaults.StickyByPrefix || needsSession) {
+		stickyKey = plan.cacheFingerprint()
+	}
+	plan.sessionKey = stickyKey
+	candidates := s.router.orderedCandidates(aliasName, &alias, stickyKey, fingerprint, time.Now())
 	if len(candidates) == 0 {
 		s.writeError(w, http.StatusServiceUnavailable, "no_targets", "every configured target is unavailable")
 		return
@@ -211,6 +199,7 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 	var outcome attemptOutcome
 	var lastErr error
 	var lastStatus int
+	lastCode := "upstream_error"
 
 	// maxAttempts bounds upstream dispatches, not loop iterations: a target
 	// skipped for saturation or a pending recovery probe must not use up the
@@ -221,6 +210,20 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 	for _, c := range candidates {
 		if dispatched >= budget {
 			break
+		}
+		// These constraints belong to this target, not the alias. An unused
+		// CLI backup must not reject requests a healthy HTTP target can serve.
+		if c.upstream.cfg.KindValue() == UpstreamCLI && c.upstream.cfg.CLIModeValue() == CLIPersistent {
+			if c.upstream.cfg.ToolMode == CLIToolsClient && plan.stream {
+				lastErr = errors.New("client tool mode requires a non-streaming request")
+				lastStatus, lastCode = http.StatusBadRequest, "client_tools_stream_unsupported"
+				continue
+			}
+			if plan.sessionKey == "" {
+				lastErr = errors.New("persistent CLI upstream requires a session header or an opening user message")
+				lastStatus, lastCode = http.StatusBadRequest, "session_required"
+				continue
+			}
 		}
 		now := time.Now()
 		if !c.upstream.claimProbe(now) {
@@ -253,6 +256,7 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 		}
 		lastErr = err
 		lastStatus = attemptStatus
+		lastCode = "upstream_error"
 		logger.Warn("attempt failed, trying next target",
 			"upstream", c.upstream.name,
 			"upstream_model", c.target.Model,
@@ -270,7 +274,7 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, api API
 		return
 	}
 	if lastStatus != 0 && !retryableStatus(lastStatus) {
-		s.writeError(w, lastStatus, "upstream_error", lastErr.Error())
+		s.writeError(w, lastStatus, lastCode, lastErr.Error())
 		return
 	}
 	s.writeError(w, http.StatusBadGateway, "all_targets_failed",

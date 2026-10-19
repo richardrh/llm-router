@@ -16,7 +16,7 @@ Point a client at `http://127.0.0.1:8787/api/v1` instead of
 OpenRouter's, so nothing else on the client changes.
 
 **Documentation: https://richardrh.github.io/llm-router/** — the README below is
-the same material, formatted as a browsable site with [Hextra](https://imfing.github.io/hextra/).
+the same material, formatted as a browsable site with [Hugo Book](https://github.com/alex-shpak/hugo-book).
 
 The alias is yours to define, and each upstream keeps its own real model id —
 which is the point: `anthropic/claude-opus-5.5` is what OpenRouter calls it,
@@ -214,7 +214,15 @@ session. It sends later turns through Claude Code's stream-JSON stdin protocol,
 so Claude Code retains its normal system prompt, `CLAUDE.md`, hooks, skills,
 plugins, MCP servers, tools, subagents and subscription login. The client must
 send a stable session header such as `X-OMP-Session`; when absent, the router
-derives a key from the conversation prefix.
+hashes the opening prefix through the first user message, before choosing an
+upstream. Later assistant replies do not change that key. Identical opening
+prefixes share a session, so use distinct headers for independent conversations.
+
+`sessionIdleTimeout` releases idle processes when another request arrives;
+active and queued turns are not expired. Released sessions resume through
+Claude Code's saved session ID and receive only the new turn or tool result.
+A canceled turn or failed process is retired so the next request can start or
+resume a usable process instead of retaining a dead session slot.
 
 The `model` target is substituted when the process starts. A session cannot
 change models midway. `cwd` controls which project configuration Claude Code
@@ -227,7 +235,8 @@ mode is the normal Claude Code agent path. By default Claude Code owns the
 tools. Set `toolMode: client` to have the router return validated
 `client_tool_request` calls as standard OpenAI `tool_calls` or Anthropic
 `tool_use` responses; the harness executes the tool and sends its result on the
-next non-streaming turn.
+next non-streaming turn. Streaming requests skip client-tool CLI targets without
+consuming an attempt; compatible HTTP or other CLI targets remain eligible.
 
 For an ordinary completion API, use an [OpenRouter](https://openrouter.ai/keys)
 key for the one-endpoint many-provider case, or an Anthropic Console key for

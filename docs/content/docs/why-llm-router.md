@@ -3,6 +3,8 @@ title: Why llm-router
 weight: 2
 ---
 
+# Why llm-router
+
 One narrow job — *rewrite one alias into different upstream model ids, spread
 across providers, fail over* — done by a single static Go binary instead of a
 control plane.

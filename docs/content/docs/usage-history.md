@@ -3,6 +3,8 @@ title: Usage history
 weight: 6
 ---
 
+# Usage history
+
 Point `store.path` at a file and the router keeps a row per served request: the
 alias, the upstream that answered, the tokens, the latency and the cost.
 

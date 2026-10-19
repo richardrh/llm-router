@@ -3,6 +3,8 @@ title: Configuration
 weight: 5
 ---
 
+# Configuration
+
 `router.yaml` is the whole config, commented and ready to run. The keys worth
 knowing:
 

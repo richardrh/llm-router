@@ -3,6 +3,8 @@ title: Running
 weight: 3
 ---
 
+# Running
+
 ## Daemon mode
 
 llm-router runs as a **long-lived foreground server**: it binds its listen
@@ -144,7 +146,16 @@ Later turns are sent over its stream-JSON stdin protocol, so Claude Code keeps
 its normal system prompt, `CLAUDE.md`, hooks, skills, plugins, MCP servers,
 tools, subagents, context management and subscription login. Send a stable
 `X-OMP-Session` (or `X-Session-Id`/`X-Conversation-Id`) header; without one,
-the router derives a key from the conversation prefix.
+the router hashes the opening prefix through the first user message before
+choosing an upstream. Later assistant replies do not change that key. Identical
+opening prefixes share a session; use distinct headers for independent conversations.
+
+`sessionIdleTimeout` releases idle processes when another request arrives.
+Active and queued turns are protected from expiration. When a released session
+has a saved Claude Code session ID, the router resumes it and sends only the
+new turn or tool result, not the full conversation again. Cancellation or a
+failed process retires the session so a later request can start or resume a
+usable process.
 
 The target's `model` is substituted when the process starts and cannot change
 within that session. `cwd` controls project discovery. Leave `--bare` out:
@@ -164,7 +175,8 @@ It starts a fresh agent per request and flattens the conversation. Persistent
 mode normally lets Claude Code own its tools. Set `toolMode: client` on a
 persistent upstream to return validated `client_tool_request` calls as standard
 OpenAI `tool_calls` or Anthropic `tool_use` responses. The harness executes the
-tool and sends its result on the next non-streaming turn.
+tool and sends its result on the next non-streaming turn. Streaming requests skip
+client-tool CLI targets without consuming an attempt; compatible targets remain eligible.
 
 For an ordinary completion API, use an [OpenRouter](https://openrouter.ai/keys)
 key for the one-endpoint many-provider case, or an Anthropic Console key for
