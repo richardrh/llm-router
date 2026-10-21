@@ -54,9 +54,9 @@ func run() error {
 	if *checkOnly {
 		for _, name := range cfg.UpstreamsInOrder() {
 			u := cfg.Upstreams[name]
-			if u.KindValue() == config.UpstreamCLI {
+			if u.KindValue() == config.UpstreamCLI || u.KindValue() == config.UpstreamCodex {
 				// No credential to report: the command owns it.
-				log.Info("upstream ok", "name", name, "kind", "cli", "command", strings.Join(u.Command, " "))
+				log.Info("upstream ok", "name", name, "kind", u.KindValue(), "command", strings.Join(u.Command, " "))
 				continue
 			}
 			state := "env:" + u.APIKeyEnv
@@ -94,6 +94,7 @@ func run() error {
 	defer store.Close()
 
 	srv := routerpkg.NewServer(cfg, router, log, store)
+	defer srv.Close()
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -137,6 +138,7 @@ func run() error {
 		log.Info("shutting down", "signal", sig.String())
 	}
 
+	srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	return httpSrv.Shutdown(ctx)

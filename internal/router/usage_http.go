@@ -2,7 +2,9 @@ package router
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -34,17 +36,29 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := r.URL.Query()
+	resp, status, err := s.queryUsage(r.URL.Query())
+	if err != nil {
+		code := "bad_request"
+		if status == http.StatusInternalServerError {
+			code = "usage_query_failed"
+		}
+		s.writeError(w, status, code, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// queryUsage is shared by JSON reporting and the server-rendered console.
+func (s *Server) queryUsage(q url.Values) (usageResponse, int, error) {
 	now := time.Now()
 	since, err := usage.ParseUsageTime(q.Get("since"), now)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "bad_request", "since: "+err.Error())
-		return
+		return usageResponse{}, http.StatusBadRequest, fmt.Errorf("since: %w", err)
 	}
 	until, err := usage.ParseUsageTime(q.Get("until"), now)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "bad_request", "until: "+err.Error())
-		return
+		return usageResponse{}, http.StatusBadRequest, fmt.Errorf("until: %w", err)
 	}
 
 	filter := usage.UsageFilter{
@@ -54,8 +68,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n <= 0 {
-			s.writeError(w, http.StatusBadRequest, "bad_request", "limit must be a positive integer")
-			return
+			return usageResponse{}, http.StatusBadRequest, fmt.Errorf("limit must be a positive integer")
 		}
 		filter.Limit = n
 	}
@@ -71,26 +84,21 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	if resp.GroupBy != "" {
 		resp.Groups, err = s.store.Groups(filter, resp.GroupBy)
 		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-			return
+			return usageResponse{}, http.StatusBadRequest, err
 		}
 	} else {
 		resp.Requests, err = s.store.Recent(filter)
 		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, "usage_query_failed", err.Error())
-			return
+			return usageResponse{}, http.StatusInternalServerError, err
 		}
 	}
 	resp.Totals, err = s.store.Totals(filter)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "usage_query_failed", err.Error())
-		return
+		return usageResponse{}, http.StatusInternalServerError, err
 	}
 	resp.Store, err = s.store.Stats()
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "usage_query_failed", err.Error())
-		return
+		return usageResponse{}, http.StatusInternalServerError, err
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	return resp, http.StatusOK, nil
 }

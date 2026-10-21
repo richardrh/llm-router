@@ -50,6 +50,7 @@ const (
 	AuthAnthropic        = config.AuthAnthropic
 	UpstreamHTTP         = config.UpstreamHTTP
 	UpstreamCLI          = config.UpstreamCLI
+	UpstreamCodex        = config.UpstreamCodex
 	CLIOneShot           = config.CLIOneShot
 	CLIPersistent        = config.CLIPersistent
 	CLIToolsClaude       = config.CLIToolsClaude

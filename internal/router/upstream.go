@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"llm-router/internal/codex"
 )
 
 // upstreamState is the per-upstream runtime: credentials, a concurrency gate,
@@ -20,6 +22,7 @@ type upstreamState struct {
 
 	sem      chan struct{}
 	sessions *cliSessionManager
+	codex    *codex.Manager
 
 	// threshold is how many consecutive failures trip the breaker.
 	threshold int
@@ -51,6 +54,17 @@ func newUpstreamState(name string, cfg Upstream, key string, threshold int) *ups
 			maxSessions = concurrency
 		}
 		state.sessions = newCLISessionManager(cfg, maxSessions, cfg.SessionIdleTimeout.Duration())
+	}
+	if cfg.KindValue() == UpstreamCodex {
+		maxSessions := cfg.MaxSessions
+		if maxSessions < 1 {
+			maxSessions = concurrency
+		}
+		command := cfg.Command
+		if len(command) == 0 {
+			command = []string{"codex", "app-server", "--listen", "stdio://"}
+		}
+		state.codex = codex.New(command, cfg.WorkingDirectory, maxSessions, cfg.SessionIdleTimeout.Duration())
 	}
 	return state
 }

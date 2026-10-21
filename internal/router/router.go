@@ -53,7 +53,7 @@ func NewRouter(cfg *Config, log *slog.Logger) (*Router, error) {
 		// A cli upstream holds no credential of its own: the command runs under
 		// the operator's login and owns its own token store. Resolving a key for
 		// it would be the very intermediation this design avoids.
-		if u.KindValue() == UpstreamCLI {
+		if u.KindValue() == UpstreamCLI || u.KindValue() == UpstreamCodex {
 			r.upstreams[name] = newUpstreamState(name, u, "", cfg.Defaults.BreakerFailures)
 			continue
 		}
@@ -78,6 +78,9 @@ func (r *Router) Close() {
 	for _, upstream := range r.upstreams {
 		if upstream.sessions != nil {
 			upstream.sessions.CloseAll()
+		}
+		if upstream.codex != nil {
+			upstream.codex.Close()
 		}
 	}
 }

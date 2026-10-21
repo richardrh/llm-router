@@ -1,0 +1,55 @@
+package webui
+
+templ Page(title, csrf, active string, body templ.Component) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="dark light"/>
+			<meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true,"historyCacheSize":0}'/>
+			<title>{ title } · LLM Router</title>
+			<link rel="stylesheet" href="/ui/assets/style.css"/>
+			<script src="/ui/assets/htmx.min.js" defer></script>
+			<script src="/ui/assets/sse.js" defer></script>
+		</head>
+		<body>
+			<a class="skip" href="#main">Skip to content</a>
+			<header class="shell-header">
+				<a class="brand" href="/ui/">LLM Router <span>Console</span></a>
+				if active != "" {
+					<nav aria-label="Main navigation">
+						for _, item := range []struct{ Path, Label, Key string }{{"/ui/", "Overview", "overview"}, {"/ui/routes", "Routes", "routes"}, {"/ui/usage", "Usage", "usage"}, {"/ui/connections", "Connections", "connections"}, {"/ui/playground", "Playground", "playground"}} {
+							if active == item.Key {
+								<a href={ templ.SafeURL(item.Path) } aria-current="page">{ item.Label }</a>
+							} else {
+								<a href={ templ.SafeURL(item.Path) }>{ item.Label }</a>
+							}
+						}
+					</nav>
+					<form method="post" action="/ui/logout"><input type="hidden" name="csrf" value={ csrf }/><button class="quiet" type="submit">Sign out</button></form>
+				}
+			</header>
+			<main id="main">
+				@body
+			</main>
+			<footer>LLM Router · Operational console</footer>
+		</body>
+	</html>
+}
+
+templ Login(csrf, message string) {
+	<section class="login panel">
+		<p class="eyebrow">Operator access</p>
+		<h1>Sign in</h1>
+		<p class="muted">Use the gateway key to access routing, usage, and the playground.</p>
+		if message != "" {
+			<p class="notice error" role="alert">{ message }</p>
+		}
+		<form method="post" action="/ui/login" class="stack">
+			<input type="hidden" name="csrf" value={ csrf }/>
+			<label for="key">Gateway key</label><input id="key" name="key" type="password" autocomplete="current-password" required autofocus/>
+			<button type="submit">Sign in</button>
+		</form>
+	</section>
+}

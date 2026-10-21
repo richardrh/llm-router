@@ -52,6 +52,62 @@ X-Router-Upstream: openrouter
 X-Router-Upstream-Model: anthropic/claude-opus-5.5
 ```
 
+## Web console
+
+Enable the embedded console in `router.yaml` and restart:
+
+```yaml
+apiKey: "replace-with-a-long-random-gateway-key"
+ui:
+  enabled: true
+  secureCookies: false
+```
+
+Open `http://127.0.0.1:8787/ui/` and sign in with the gateway key. A nonempty key
+is required; API clients must send the same key as a bearer token.
+Overview shows upstream capacity and cooldowns. Routes is read-only. Usage
+supports time, alias, upstream, and grouping filters over retained records.
+Recorded requests are not a count of all incoming traffic or every failure;
+missing provider usage is shown as unknown.
+
+The playground supports OpenAI Chat Completions and Anthropic Messages, streams
+responses, and offers Stop and New conversation controls. It assigns an explicit
+conversation ID. CLI targets require acknowledgement before each request because
+they can execute tools on the router host. Claude Code client-owned tool routes are
+non-streaming; returned tool calls await an external harness and are never
+executed by the console. Pending tool calls, stopped turns, and failed turns
+require a new conversation.
+For OpenAI models using a ChatGPT subscription, see
+[Codex subscription]({{< relref "/docs/codex" >}}). Codex's native client-tool
+calls support streaming and are still never executed by the playground.
+Connections reads cached provider state only. Use **Refresh account and catalog**
+to explicitly inspect or reload a Codex account; merely opening the page does
+not launch or restart Codex. Pending-login notifications update the snapshot.
+The playground restores its transcript on reconnect without resubmitting
+inference, and incremental updates replace only the active turn.
+
+Sessions/transcripts are bounded and held in server memory, not browser storage.
+Logout or expiry cancels active work; restarting discards browser sessions.
+Sessions expire after 30 minutes without requests or 12 hours total, with at most
+128 sessions. Prompts are capped at 32 KiB, responses at 1 MiB, and conversations
+at 50 turns plus a transcript-size bound. Claude Code may retain its own
+on-disk sessions independently.
+Completed CLI processes still follow the upstream's `maxSessions` and
+`sessionIdleTimeout`; use a positive idle timeout so abandoned playground
+conversations can release process capacity.
+
+Use HTTP only on loopback. For a TLS-terminating reverse proxy, set
+`ui.secureCookies: true`, preserve the public `Host`, disable buffering for
+`/ui/playground/stream`, and prevent direct external access to the backend.
+The router does not trust forwarded headers for cookie/origin security.
+The console uses HttpOnly/SameSite=Strict cookies, CSRF tokens, same-origin checks,
+and allowlisted operational snapshots that omit credentials, commands, and paths.
+
+All HTML is rendered by templ; only the vendored htmx and official SSE extension
+execute in the browser. There is no handwritten application JavaScript or CDN
+dependency. Template changes require `go generate ./internal/webui`; ordinary
+builds use the checked-in generated Go and embedded assets.
+
 ## Docker
 
 The binary is static (the SQLite driver is pure Go), so the image is a

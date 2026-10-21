@@ -55,6 +55,7 @@ func (p APIProtocol) Path() (string, error) {
 type Config struct {
 	Listen    string              `yaml:"listen"`
 	APIKey    string              `yaml:"apiKey"`
+	UI        UIConfig            `yaml:"ui"`
 	Defaults  Defaults            `yaml:"defaults"`
 	Store     StoreConfig         `yaml:"store"`
 	Upstreams map[string]Upstream `yaml:"upstreams"`
@@ -64,6 +65,13 @@ type Config struct {
 	// that disagrees with the model capability table. They are reported to the
 	// operator but do not stop the router.
 	Warnings []string `yaml:"-"`
+}
+
+// UIConfig enables the same-origin operational console. APIKey is required.
+type UIConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// SecureCookies is required when HTTPS terminates at a reverse proxy.
+	SecureCookies bool `yaml:"secureCookies"`
 }
 
 // StoreConfig configures the local usage database. An empty path disables it,
@@ -146,6 +154,8 @@ const (
 	// its credentials: the command runs under the operator's own login and owns
 	// its own token store, and the router only sees the text it prints.
 	UpstreamCLI UpstreamKind = "cli"
+	// UpstreamCodex uses the official subscription-backed Codex app-server.
+	UpstreamCodex UpstreamKind = "codex"
 )
 
 // CLIMode selects whether a CLI process handles one request or a session.
@@ -202,8 +212,7 @@ type Upstream struct {
 	// idle sessions alive until the router exits.
 	SessionIdleTimeout Duration `yaml:"sessionIdleTimeout"`
 
-	// Kind selects how this upstream is reached: "http" (the default) posts to
-	// BaseURL, "cli" runs Command as a local subprocess.
+	// Kind selects "http", "cli", or the subscription-backed "codex" app-server.
 	Kind UpstreamKind `yaml:"kind"`
 	// Mode selects one process per request or one long-lived process per session.
 	Mode CLIMode `yaml:"mode"`
@@ -344,8 +353,6 @@ func (c *Config) applyDefaults() {
 	}
 	// Assign through the map key: a range variable is a copy, so mutating it
 	// would leave every upstream at zero concurrency.
-	// Assign through the map key: a range variable is a copy, so mutating it
-	// would leave every upstream at zero concurrency.
 	for name, u := range c.Upstreams {
 		if u.MaxConcurrency == 0 {
 			u.MaxConcurrency = 8
@@ -353,7 +360,18 @@ func (c *Config) applyDefaults() {
 		if u.MaxSessions == 0 {
 			u.MaxSessions = u.MaxConcurrency
 		}
-		if u.AuthStyle == "" {
+		if u.kind() == UpstreamCodex {
+			if len(u.Command) == 0 {
+				u.Command = []string{"codex", "app-server", "--listen", "stdio://"}
+			}
+			if u.Mode == "" {
+				u.Mode = CLIPersistent
+			}
+			if u.ToolMode == "" {
+				u.ToolMode = CLIToolsClient
+			}
+		}
+		if u.AuthStyle == "" && u.kind() != UpstreamCodex {
 			u.AuthStyle = AuthBearer
 		}
 		c.Upstreams[name] = u
@@ -368,6 +386,10 @@ func (c *Config) validate() error {
 	// the output is stable.
 	warns := map[string]bool{}
 	warn := func(format string, args ...any) { warns[fmt.Sprintf(format, args...)] = true }
+
+	if c.UI.Enabled && strings.TrimSpace(c.APIKey) == "" {
+		add("ui.enabled requires a non-empty apiKey")
+	}
 
 	// A directory in store.path would otherwise surface as an opaque failure
 	// from the SQLite driver at startup.
@@ -435,10 +457,35 @@ func (c *Config) validate() error {
 			if u.APIKey != "" || u.APIKeyEnv != "" {
 				add("upstream %q: a cli upstream manages its own credentials; drop apiKey and apiKeyEnv", name)
 			}
+		case UpstreamCodex:
+			if u.BaseURL != "" || u.APIKey != "" || u.APIKeyEnv != "" || u.AuthStyle != "" || len(u.Headers) != 0 {
+				add("upstream %q: codex manages its own subscription credentials; baseUrl, apiKey, apiKeyEnv, authStyle and headers are prohibited", name)
+			}
+			if len(u.BodyPatch) != 0 || len(u.BodyDrop) != 0 {
+				add("upstream %q: codex does not support bodyPatch or bodyDrop", name)
+			}
+			if u.Mode != CLIPersistent || u.ToolMode != CLIToolsClient {
+				add("upstream %q: codex requires mode persistent and toolMode client", name)
+			}
+			if len(u.Command) == 0 || strings.TrimSpace(u.Command[0]) == "" {
+				add("upstream %q: codex command must name an executable", name)
+			}
+			for _, arg := range u.Command {
+				if strings.Contains(arg, "{prompt}") || strings.Contains(arg, "{model}") {
+					add("upstream %q: codex command must not contain prompt or model placeholders", name)
+				}
+			}
+			if u.MaxConcurrency < 1 || u.MaxSessions < 1 || u.SessionIdleTimeout < 0 || u.Timeout < 0 {
+				add("upstream %q: codex concurrency and sessions must be positive and timeouts non-negative", name)
+			}
 		default:
-			add("upstream %q: unknown kind %q (want %q or %q)", name, u.Kind, UpstreamHTTP, UpstreamCLI)
+			add("upstream %q: unknown kind %q (want http, cli or codex)", name, u.Kind)
 		}
 		switch u.AuthStyle {
+		case "":
+			if u.kind() != UpstreamCodex {
+				add("upstream %q: authStyle is required", name)
+			}
 		case AuthBearer, AuthAnthropic:
 		default:
 			add("upstream %q: unknown authStyle %q (want %q or %q)", name, u.AuthStyle, AuthBearer, AuthAnthropic)
@@ -488,6 +535,14 @@ func (c *Config) validate() error {
 			// renderer for a Responses-API client to consume.
 			if up, ok := c.Upstreams[t.Upstream]; ok && up.kind() == UpstreamCLI && a.API == APIOpenAIResponses {
 				add("model %q target %d: a cli upstream cannot serve an openai-responses client", name, i)
+			}
+			if up, ok := c.Upstreams[t.Upstream]; ok && up.kind() == UpstreamCodex {
+				if a.API != APIOpenAICompletions || t.API != "" && t.API != APIOpenAICompletions {
+					add("model %q target %d: codex supports only openai-completions; strict output limits cannot be represented through Anthropic or Responses", name, i)
+				}
+				if len(t.BodyPatch) != 0 || len(t.BodyDrop) != 0 {
+					add("model %q target %d: codex does not support bodyPatch or bodyDrop", name, i)
+				}
 			}
 			// A patch on "model" would be silently undone by the router's own
 			// rewrite, and it reads as if it selects a model. Point at the

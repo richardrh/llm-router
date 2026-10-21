@@ -1,0 +1,111 @@
+package webui
+
+templ ProviderConnections(csrf string, connections []Connection, message string) {
+	<section id="connections">
+		if pendingLogin(connections) {
+			<div hx-get="/ui/connections" hx-trigger="every 3s" hx-target="#connections" hx-swap="outerHTML"></div>
+		}
+		<div class="page-heading">
+			<div><p class="eyebrow">Provider accounts</p><h1>Connections</h1></div>
+		</div>
+		<p class="muted">Your gateway login protects this console. Each upstream needs its own authentication. All operators share the router host's provider accounts.</p>
+		if message != "" {
+			<p class="notice error" role="alert">{ message }</p>
+		}
+		if len(connections)==0 {
+			<p class="panel empty">No provider connections configured.</p>
+		}
+		for _, connection:=range connections {
+			<section class="panel">
+				<div class="page-heading"><h2>{ connection.Name }</h2><span class="badge">{ connection.Kind }</span></div>
+				if connection.Kind=="codex" {
+					<form method="post" action="/ui/connections/action" hx-post="/ui/connections/action" hx-target="#connections" hx-swap="outerHTML">
+						<input type="hidden" name="csrf" value={ csrf }/>
+						<input type="hidden" name="upstream" value={ connection.Name }/>
+						<input type="hidden" name="action" value="refresh"/>
+						<button type="submit" class="quiet">Refresh account and catalog</button>
+					</form>
+					if connection.CheckedAt.IsZero() {
+						<p role="status">Account status not checked. Refresh to inspect the router host's Codex account.</p>
+					} else {
+						<p class="muted">Account checked: { connection.CheckedAt.Format("2006-01-02 15:04:05 MST") }</p>
+					}
+					if connection.SignedIn {
+						<p class="notice" role="status">Signed in with ChatGPT. Plan: { connection.Plan }</p>
+						<form method="post" action="/ui/connections/action" hx-post="/ui/connections/action" hx-target="#connections" hx-swap="outerHTML">
+							<input type="hidden" name="csrf" value={ csrf }/>
+							<input type="hidden" name="upstream" value={ connection.Name }/>
+							<input type="hidden" name="action" value="logout"/>
+							<button type="submit" class="quiet">Disconnect Codex account</button>
+						</form>
+						<p class="muted">Disconnecting signs Codex out on this host and stops this upstream's active conversations.</p>
+					} else {
+						if !connection.CheckedAt.IsZero() {
+							<p role="status">Not signed in with ChatGPT.</p>
+						}
+						if connection.AccountType!="" {
+							<p class="muted">Current Codex authentication type: { connection.AccountType }. This upstream requires subscription authentication, not API billing.</p>
+						}
+						if connection.LoginURL!="" {
+							<p><a class="login-link" href={ templ.SafeURL(connection.LoginURL) } target="_blank" rel="noopener noreferrer">Continue sign-in with OpenAI</a></p>
+							if connection.UserCode!="" {
+								<p>Device code: <code>{ connection.UserCode }</code></p>
+							}
+							<p class="muted">Complete the official sign-in in your browser. For a browser callback, use a browser on the router host or forward Codex's callback port. This page checks completion automatically.</p>
+							<form method="post" action="/ui/connections/action" hx-post="/ui/connections/action" hx-target="#connections" hx-swap="outerHTML">
+								<input type="hidden" name="csrf" value={ csrf }/>
+								<input type="hidden" name="upstream" value={ connection.Name }/>
+								<input type="hidden" name="action" value="cancel"/>
+								<input type="hidden" name="login_id" value={ connection.LoginID }/>
+								<button type="submit" class="quiet">Cancel sign-in</button>
+							</form>
+						} else {
+							<form method="post" action="/ui/connections/action" hx-post="/ui/connections/action" hx-target="#connections" hx-swap="outerHTML">
+								<input type="hidden" name="csrf" value={ csrf }/>
+								<input type="hidden" name="upstream" value={ connection.Name }/>
+								<input type="hidden" name="action" value="login"/>
+								<button type="submit">Sign in with ChatGPT</button>
+							</form>
+						}
+					}
+					<p class="muted">The official Codex app-server owns OAuth, token storage, and refresh. No tokens are copied into the router or omp configuration. Model requests use your account's Codex entitlement.</p>
+				} else if connection.Kind=="cli" {
+					<p class="notice">Claude Code owns authentication. Sign in with Claude Code on the router host; the router does not copy its credentials.</p>
+				} else {
+					if connection.SignedIn {
+						<p class="notice">Provider API credential configured. Access has not been verified by a model request.</p>
+					} else {
+						<p class="notice">Provider credential missing. Configure the upstream's API key on the router host and restart the router.</p>
+					}
+				}
+				if connection.Error!="" {
+					<p class="notice error" role="alert">{ connection.Error }</p>
+				}
+				if len(connection.Models)>0 {
+					<details>
+						<summary>Codex model catalog</summary>
+						<p class="muted">Advertised by the installed Codex version; account access can differ. Routes exposes the aliases configured in this router. This catalog does not change configuration.</p>
+						<div class="table-scroll" tabindex="0" role="region" aria-label="Codex model catalog">
+							<table>
+								<thead><tr><th>Model ID</th><th>Name</th><th>Default</th></tr></thead>
+								<tbody>
+									for _, model:=range connection.Models {
+										<tr>
+											<td><code>{ model.ID }</code></td>
+											<td>{ model.Name }</td>
+											<td>
+												if model.Default {
+													Yes
+												}
+											</td>
+										</tr>
+									}
+								</tbody>
+							</table>
+						</div>
+					</details>
+				}
+			</section>
+		}
+	</section>
+}

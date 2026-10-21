@@ -22,6 +22,14 @@ listen: 127.0.0.1:8787
 # reasonable while bound to loopback.
 apiKey: ""
 
+# Optional operator console at /ui/. Requires a non-empty apiKey above.
+# UI sessions authorize inference, including server-side Claude Code tools.
+ui:
+  enabled: false
+  # Set true behind an HTTPS reverse proxy that preserves the public Host.
+  # Forwarded headers are not trusted to decide cookie or origin security.
+  secureCookies: false
+
 defaults:
   # Upstream dispatches per client request before giving up.
   maxAttempts: 3
@@ -128,6 +136,17 @@ upstreams:
   #     cwd: /path/to/project
   #     maxSessions: 2
   #     sessionIdleTimeout: 30m
+
+  # Codex / ChatGPT subscription (official app-server; no API key).
+  # Install @openai/codex 0.163.0, then sign in through Console > Connections.
+  #   codex:
+  #     kind: codex
+  #     maxSessions: 8
+  #     sessionIdleTimeout: 30m
+  # Add a model alias with api: openai-completions and target:
+  #   {upstream: codex, model: default, weight: 1}
+  # Codex is text-only and rejects explicit token caps. See the Codex docs
+  # for omp omitMaxOutputTokens and compatibility settings.
 
 models:
   # --------------------------------------------------------------- Claude ----

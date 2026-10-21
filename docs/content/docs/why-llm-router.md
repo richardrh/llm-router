@@ -19,7 +19,7 @@ control plane.
 | Alias → several providers | per-target model ids, weights, weight-0 failover-only targets | `model_name` with multiple deployments, weights and fallbacks |
 | Wire translation | OpenAI Chat ↔ Anthropic Messages in both directions, streams translated incrementally without buffering | serves the OpenAI format and converts to provider SDKs; passthrough routes for some providers |
 | Usage accounting | a SQLite file, one row per request, queryable over `/usage` with no database server | spend tracking through its database or external callbacks |
-| Control plane (keys, budgets, teams, UI) | deliberately none | a core feature |
+| Control plane (keys, budgets, teams) | deliberately none; optional operational console and playground | a core feature |
 
 Both were measured idle on the same machine (macOS, arm64, one worker): llm-router
 5.9 MB RSS, LiteLLM 94.8 MB — about 16× — and LiteLLM took 25 s to start serving
