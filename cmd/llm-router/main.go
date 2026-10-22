@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -100,7 +101,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Listen, err)
 	}
+	defer ln.Close()
 
+	// Track connection lifetimes, not just Shutdown's graceful-drain result.
+	// Close interrupts I/O but does not wait for handlers to finish accounting.
+	var connections sync.WaitGroup
 	httpSrv := &http.Server{
 		Handler: srv.Handler(),
 		// No WriteTimeout: a coding agent can hold one stream for many
@@ -108,6 +113,14 @@ func run() error {
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			switch state {
+			case http.StateNew:
+				connections.Add(1)
+			case http.StateClosed, http.StateHijacked:
+				connections.Done()
+			}
+		},
 	}
 
 	usageStore := "off"
@@ -122,10 +135,19 @@ func run() error {
 		"usage_store", usageStore)
 
 	errCh := make(chan error, 1)
+	served := make(chan struct{})
 	go func() {
+		defer close(served)
 		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
+	}()
+	defer func() {
+		// Also runs on Serve errors and graceful-drain timeout. Waiting for
+		// Serve to return ensures no new connection can register before Wait.
+		_ = httpSrv.Close()
+		<-served
+		connections.Wait()
 	}()
 
 	stop := make(chan os.Signal, 1)
@@ -138,7 +160,9 @@ func run() error {
 		log.Info("shutting down", "signal", sig.String())
 	}
 
-	srv.Close()
+	// Cancel console work alongside the HTTP drain. The deferred Close joins
+	// every console worker before the usage store can close.
+	go srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	return httpSrv.Shutdown(ctx)

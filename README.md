@@ -632,6 +632,14 @@ Five properties are worth knowing:
   usage, no cost and no upstream that answered, so that request is logged rather
   than stored.
 
+**Shutdown drains work before closing history.** On SIGINT or SIGTERM the router
+stops accepting connections and cancels console inference, including turns whose
+conversation was replaced or logged out. Existing HTTP requests have 20 seconds
+to finish. If that deadline expires, remaining connections are closed and their
+handlers are joined before the usage queue is drained and SQLite closes; the
+deadline is still reported as an error. Console workers are also joined before
+history closes. An abrupt process kill has no equivalent flush guarantee.
+
 ## Design notes
 
 **Failover happens strictly before the first response byte is committed.** The

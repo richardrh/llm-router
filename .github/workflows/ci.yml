@@ -18,16 +18,89 @@ jobs:
       - run: go generate ./internal/webui
       - run: git diff --exit-code -- internal/webui
       - run: go vet ./...
-      - run: go test -race ./...
+      - run: go build -race -o "$RUNNER_TEMP/llm-router-race" ./cmd/llm-router
+      - run: go test -race ./... -count=1
+        env:
+          ROUTER_E2E_BINARY: ${{ runner.temp }}/llm-router-race
       - run: CGO_ENABLED=0 go build -trimpath ./cmd/llm-router
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+      - run: npm ci
+        working-directory: tests/browser
+      - run: npx playwright install --with-deps chromium
+        working-directory: tests/browser
+      - run: go test -tags=browser ./tests/e2e -run='^TestBrowserJourneys$' -count=1 -timeout=15m
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-diagnostics
+          path: |
+            tests/browser/test-results/
+            tests/browser/playwright-report/
+          if-no-files-found: ignore
+
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: config
+            target: FuzzConfigDecode
+          - package: wire
+            target: FuzzWireSupportedMessages
+          - package: inference
+            target: FuzzSSEFraming
+          - package: usage
+            target: FuzzUsageChunking
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Bounded native exploration
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./internal/${{ matrix.package }} -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=30s -fuzzminimizetime=10s -parallel=2 -timeout=2m 2>&1 | tee "$RUNNER_TEMP/fuzz.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-${{ matrix.package }}
+          path: |
+            internal/${{ matrix.package }}/testdata/fuzz/
+            ${{ runner.temp }}/fuzz.log
+          if-no-files-found: warn
 
   container:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: false
+          load: true
           tags: llm-router:ci
+      - run: go test -tags=packaged ./tests/e2e -run='^TestPackagedRuntime$' -count=1 -timeout=5m
+        env:
+          ROUTER_CONTAINER_RUNTIME: docker
+          ROUTER_CONTAINER_IMAGE: llm-router:ci
+      - name: Remove test image
+        if: always()
+        run: docker image rm -f llm-router:ci

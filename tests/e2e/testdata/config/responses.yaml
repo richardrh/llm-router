@@ -1,0 +1,9 @@
+apiKey: gateway-e2e-key
+upstreams:
+  fixture:
+    baseUrl: "{{URL}}/v1"
+    apiKeyEnv: CONFIG_TEST_KEY
+models:
+  private-model:
+    api: openai-responses
+    targets: [{upstream: fixture, weight: 1}]

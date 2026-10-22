@@ -54,7 +54,7 @@ func NewServer(cfg *Config, router *Router, log *slog.Logger, store *Store) *Ser
 	return s
 }
 
-// Close cancels console work and releases browser sessions.
+// Close revokes browser sessions, cancels console work, and waits for it to finish.
 func (s *Server) Close() {
 	if s.ui != nil {
 		s.ui.Close()

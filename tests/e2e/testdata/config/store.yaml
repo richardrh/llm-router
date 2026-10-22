@@ -1,0 +1,16 @@
+apiKey: gateway-e2e-key
+store: {path: '{{STORE}}', queueSize: 8, maxRows: 0}
+defaults:
+  firstByteTimeout: 30s
+  streamIdleTimeout: 2m
+  maxStreamDuration: 5m
+  breakerCooldown: 1s
+  rateLimitCooldown: 1s
+  cacheAffinityTTL: 5m
+upstreams:
+  fixture:
+    baseUrl: "{{URL}}/v1"
+models:
+  private-model:
+    api: openai-completions
+    targets: [{upstream: fixture, weight: 1}]

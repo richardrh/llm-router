@@ -35,19 +35,23 @@ func (h *Handler) revokeSession(s *browserSession) {
 	h.closePlayground(s)
 }
 
+// Close revokes browser sessions and waits for all inference to finish, including
+// canceled turns no longer referenced by a session. Dependencies may close only
+// after this returns. Concurrent Close calls share the same completion barrier.
 func (h *Handler) Close() {
-	h.mu.Lock()
-	if !h.closed {
+	h.closeOnce.Do(func() {
+		h.mu.Lock()
 		h.closed = true
 		close(h.stop)
-	}
-	stale := h.sessions
-	h.sessions = make(map[[32]byte]*browserSession)
-	h.mu.Unlock()
-	for _, s := range stale {
-		h.revokeSession(s)
-	}
-	<-h.done
+		stale := h.sessions
+		h.sessions = nil
+		h.mu.Unlock()
+		for _, s := range stale {
+			h.revokeSession(s)
+		}
+		<-h.done
+		h.workers.Wait()
+	})
 }
 
 func (h *Handler) reap() {
