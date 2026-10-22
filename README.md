@@ -16,7 +16,7 @@ Point a client at `http://127.0.0.1:8787/api/v1` instead of
 OpenRouter's, so nothing else on the client changes.
 
 **Documentation: https://richardrh.github.io/llm-router/** — the README below is
-the same material, formatted as a browsable site with [Hextra](https://imfing.github.io/hextra/).
+the same material, formatted as a browsable site with [Hugo Book](https://github.com/alex-shpak/hugo-book).
 
 The alias is yours to define, and each upstream keeps its own real model id —
 which is the point: `anthropic/claude-opus-5.5` is what OpenRouter calls it,
@@ -40,7 +40,7 @@ control plane.
 | Alias → several providers | per-target model ids, weights, weight-0 failover-only targets | `model_name` with multiple deployments, weights and fallbacks |
 | Wire translation | OpenAI Chat ↔ Anthropic Messages in both directions, streams translated incrementally without buffering | serves the OpenAI format and converts to provider SDKs; passthrough routes for some providers |
 | Usage accounting | a SQLite file, one row per request, queryable over `/usage` with no database server | spend tracking through its database or external callbacks |
-| Control plane (keys, budgets, teams, UI) | deliberately none | a core feature |
+| Control plane (keys, budgets, teams) | deliberately none; optional operational console and playground | a core feature |
 
 Both were measured idle on the same machine (macOS, arm64, one worker): llm-router
 5.9 MB RSS, LiteLLM 94.8 MB — about 16× — and LiteLLM took 25 s to start serving
@@ -111,6 +111,117 @@ Responses carry the routing decision:
 X-Router-Upstream: openrouter
 X-Router-Upstream-Model: anthropic/claude-opus-5.5
 ```
+
+### Web console
+
+The optional console is embedded in the binary at `http://127.0.0.1:8787/ui/`.
+Enable it in `router.yaml`, then restart:
+
+```yaml
+apiKey: "replace-with-a-long-random-gateway-key"
+ui:
+  enabled: true
+  secureCookies: false  # true when HTTPS terminates at a reverse proxy
+```
+
+Sign in with the **gateway key**, not a provider key. Enabling the console
+without a key is rejected. API clients must also send that key as a bearer token.
+The console provides live upstream capacity/cooldown snapshots, read-only route
+configuration, usage filters and grouped reports, and a conversation playground.
+Accounting covers retained, recorded requests—not all traffic or all failures;
+unknown usage is not treated as measured zero.
+
+Connections displays cached provider-account state. Opening the page or polling
+a pending login does not start a process or fetch a model catalog. Use
+**Refresh account and catalog** to explicitly load or refresh Codex status;
+an unchecked account is shown as unknown, not signed out. Login notifications
+update the cached state without a browser-triggered refresh.
+
+The playground supports OpenAI Chat Completions and Anthropic Messages, including
+streaming and Stop/New conversation controls. It uses a distinct conversation
+identity rather than relying on prompt-prefix matching. Aliases with CLI targets
+require explicit acknowledgement because those processes can execute tools on
+the router host. Claude Code client-owned tool routes use non-streaming requests; returned
+tool calls are displayed for an external harness and are **never executed by the
+console**. A pending tool call, stopped turn, or failed turn requires a new
+conversation before continuing.
+Codex routes support streaming native client-tool calls; see the Codex section below.
+Streaming updates replace only the active turn; completed history is restored
+on connection/reconnection and is not resent for every token update.
+
+Browser sessions and transcripts live only in server memory: no browser transcript
+storage or console history database. Sessions expire after 30 minutes without
+requests or 12 hours total. Logout/expiry cancels active work; restart clears all
+browser sessions. Limits are 128 browser sessions, 32 KiB per prompt, 1 MiB per
+response, and 50 turns per conversation, with an additional transcript-size bound.
+Claude Code itself may persist its own sessions independently.
+Completed CLI processes still follow `maxSessions` and `sessionIdleTimeout`.
+Set a positive idle timeout on CLI upstreams used for repeated playground
+conversations so abandoned process slots can be reclaimed.
+
+Keep HTTP loopback-only. For remote access use HTTPS, set `ui.secureCookies: true`
+when TLS terminates at your reverse proxy, preserve the public `Host`, and disable
+proxy buffering for `/ui/playground/stream`. Restrict direct access to the backend.
+The console deliberately does not trust `X-Forwarded-*` headers.
+Cookie sessions are HttpOnly/SameSite=Strict, POSTs require CSRF and same-origin
+checks, and status reports omit provider keys, headers, commands, and paths.
+
+Templates use **templ v0.3.1070** with vendored **htmx 2.0.8** and the official
+**SSE extension 2.2.4**. There is no application-authored JavaScript, CDN, Node
+runtime, or frontend build pipeline. Generated Go is checked in; after editing
+`internal/webui/*.templ`, run:
+
+```bash
+go generate ./internal/webui
+go test -race ./...
+```
+
+Dashboard ownership is split deliberately: `internal/webui` owns browser auth,
+conversation state, page handlers, and page-specific templ views.
+`internal/inference` adapts the existing router handler to typed text, routing,
+tool-call, usage, and completion results; it owns provider-wire decoding.
+The playground never invokes a second routing engine or parses provider SSE.
+Conversation transitions are explicit (`Ready`, `Running`, `AwaitingTools`,
+`Stopped`, `Failed`, `Closed`), separate from browser-session revocation.
+
+### Codex subscription
+
+The `codex` upstream runs the official Codex app-server with your ChatGPT login,
+not an OpenAI API key and not tokens copied from omp. Install Codex 0.163.0,
+configure a `kind: codex` upstream, then use **Console → Connections → Sign in
+with ChatGPT**, or run `codex login` as the router's OS user.
+
+```yaml
+upstreams:
+  codex:
+    kind: codex
+    maxSessions: 8
+    sessionIdleTimeout: 30m
+models:
+  openai/codex:
+    api: openai-completions
+    targets:
+      - {upstream: codex, model: default, weight: 1}
+```
+
+`default` resolves the installed catalog's recommended model. The console shows
+the actual catalog; availability still depends on your account. The adapter
+supports text, streaming, and native function-tool calls executed by the client.
+Codex's host environment tools are disabled and approval requests fail closed.
+
+**Strict limits:** Codex routes are OpenAI Chat-only. `max_tokens`,
+`max_completion_tokens`, sampling controls, and unsupported parameters are
+rejected—not silently ignored. Configure omp's Codex model overrides with
+`omitMaxOutputTokens: true` and `compat.supportsStore: false`, along with the
+compatibility settings in the [Codex setup guide](docs/content/docs/codex.md).
+Image inputs are not supported. `reasoning_effort` is forwarded natively.
+
+Live conversations and pending tool calls require the same process; after
+expiry, eviction, cancellation, or restart, start a new session. Tokens are
+recorded when Codex reports them; dollar cost stays unreported. The default
+container does not include Codex—install it on the router host or use a custom
+runtime image. See the [protocol notes](docs/codex-protocol.md) for the exact
+versioned contracts and safety restrictions.
 
 ### Docker
 
@@ -214,7 +325,15 @@ session. It sends later turns through Claude Code's stream-JSON stdin protocol,
 so Claude Code retains its normal system prompt, `CLAUDE.md`, hooks, skills,
 plugins, MCP servers, tools, subagents and subscription login. The client must
 send a stable session header such as `X-OMP-Session`; when absent, the router
-derives a key from the conversation prefix.
+hashes the opening prefix through the first user message, before choosing an
+upstream. Later assistant replies do not change that key. Identical opening
+prefixes share a session, so use distinct headers for independent conversations.
+
+`sessionIdleTimeout` releases idle processes when another request arrives;
+active and queued turns are not expired. Released sessions resume through
+Claude Code's saved session ID and receive only the new turn or tool result.
+A canceled turn or failed process is retired so the next request can start or
+resume a usable process instead of retaining a dead session slot.
 
 The `model` target is substituted when the process starts. A session cannot
 change models midway. `cwd` controls which project configuration Claude Code
@@ -227,7 +346,8 @@ mode is the normal Claude Code agent path. By default Claude Code owns the
 tools. Set `toolMode: client` to have the router return validated
 `client_tool_request` calls as standard OpenAI `tool_calls` or Anthropic
 `tool_use` responses; the harness executes the tool and sends its result on the
-next non-streaming turn.
+next non-streaming turn. Streaming requests skip client-tool CLI targets without
+consuming an attempt; compatible HTTP or other CLI targets remain eligible.
 
 For an ordinary completion API, use an [OpenRouter](https://openrouter.ai/keys)
 key for the one-endpoint many-provider case, or an Anthropic Console key for
@@ -278,14 +398,16 @@ knowing:
 | --- | --- |
 | `listen` | Bind address. Loopback by default. |
 | `apiKey` | Shared secret clients must present. `""` accepts any. |
+| `ui.enabled` | Enable the embedded console at `/ui/`. Requires a nonempty `apiKey`. |
+| `ui.secureCookies` | Use HTTPS cookies and origin checks behind a TLS-terminating proxy. Defaults to false. |
 | `defaults.*` | Retry budget, timeouts, sticky affinity, breaker thresholds. |
 | `store.path` | SQLite file for usage history. Empty keeps no history. |
 | `store.queueSize` | Records waiting to be written before they are dropped. |
 | `store.maxRows` | Records kept, oldest deleted first. `0` keeps everything. |
 | `upstreams.<name>.baseUrl` | Provider root; the protocol's path is appended. |
 | `upstreams.<name>.apiKeyEnv` | Env var holding the key. Preferred over `apiKey`. |
-| `upstreams.<name>.kind` | `http` (the default) or `cli`. |
-| `upstreams.<name>.command` | argv for a `cli` upstream; must contain `{prompt}` exactly once. |
+| `upstreams.<name>.kind` | `http` (default), `cli` for Claude Code, or `codex` for ChatGPT subscription access. |
+| `upstreams.<name>.command` | CLI argv. Claude one-shot uses `{prompt}`; Codex defaults to `codex app-server --listen stdio://`. |
 | `upstreams.<name>.timeout` | Bounds one `cli` invocation. Defaults to `maxStreamDuration`. |
 | `upstreams.<name>.authStyle` | `bearer` (the default) or `anthropic`. |
 | `upstreams.<name>.headers` | Extra headers per upstream, overriding the client's. |

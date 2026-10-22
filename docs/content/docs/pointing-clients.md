@@ -3,6 +3,8 @@ title: Pointing clients at it
 weight: 4
 ---
 
+# Pointing clients at it
+
 **Any OpenRouter client.** Change the base URL and nothing else:
 
 ```bash
@@ -45,5 +47,7 @@ X-OMP-Session: project-42
 ```
 
 The router also accepts `X-Session-Id`, `X-Conversation-Id`, and
-`X-Sticky-Key`. Without one, it derives a key from the opening conversation
-prefix when the request contains messages.
+`X-Sticky-Key`. Without one, it hashes the opening prefix through the first
+user message and uses that key for persistent sessions and sticky selection.
+Keep that prefix unchanged on later turns. Identical opening prefixes share a
+session, so send distinct headers when independent conversations start the same way.

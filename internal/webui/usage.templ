@@ -1,0 +1,67 @@
+package webui
+
+templ Usage(data UsageData) {
+	<section id="usage">
+		<div class="page-heading"><div><p class="eyebrow">Accounting</p><h1>Usage</h1></div></div>
+		if !data.Enabled {
+			<p class="notice">Usage recording is disabled. Enable usage storage in the router configuration to collect request records.</p>
+		} else {
+			<form class="filters panel" method="get" action="/ui/usage" hx-get="/ui/usage" hx-target="#usage" hx-swap="outerHTML">
+				<label>Since (RFC3339)<input name="since" value={ data.Since } placeholder="2026-01-01T00:00:00Z"/></label>
+				<label>Until (RFC3339)<input name="until" value={ data.Until } placeholder="2026-01-02T00:00:00Z"/></label>
+				<label>Alias<input name="alias" value={ data.Alias }/></label><label>Upstream<input name="upstream" value={ data.Upstream }/></label>
+				<label>Group by<select name="group_by"><option value="" selected?={ data.GroupBy == "" }>No grouping</option><option value="alias" selected?={ data.GroupBy == "alias" }>Alias</option><option value="upstream" selected?={ data.GroupBy == "upstream" }>Upstream</option><option value="upstream_model" selected?={ data.GroupBy == "upstream_model" }>Upstream model</option><option value="cost_source" selected?={ data.GroupBy == "cost_source" }>Cost source</option></select></label>
+				<label>Recent row limit<input name="limit" type="number" min="1" max="1000" value={ data.Limit }/></label><button type="submit">Apply filters</button><a href="/ui/usage">Reset</a>
+			</form>
+			if data.Error != "" {
+				<p class="notice error" role="alert">{ data.Error }</p>
+			} else {
+				<div class="metrics">
+					@Metric("Requests", number(data.Totals.Requests))
+					@Metric("Input tokens", number(data.Totals.InputTokens))
+					@Metric("Output tokens", number(data.Totals.OutputTokens))
+					@Metric("Known cost", dollars(data.Totals.CostUSD))
+				</div>
+				<p class="muted">Known costs combine provider-reported and configured-rate estimates; unknown costs are not zero-cost claims. Tokens exclude unreported usage. Unreported requests: { number(data.Totals.Unreported) }. Cache read / write tokens: { number(data.Totals.CacheReadTokens) } / { number(data.Totals.CacheWriteTokens) }.</p>
+				<p class="notice">Retained rows: { number(data.Store.Rows) } / { number(data.Store.MaxRows) }. Pruned rows: { number(int64(data.Store.Pruned)) }. Dropped records: { number(int64(data.Dropped)) }. Reports cover retained records only; pruning and dropped records can make totals incomplete.</p>
+				if data.GroupBy != "" {
+					<section class="panel">
+						<h2>Group totals</h2>
+						if len(data.Groups) == 0 {
+							<p class="empty">No groups match these filters.</p>
+						} else {
+							<div class="table-scroll" tabindex="0" role="region" aria-label="Usage group totals">
+								<table>
+									<thead><tr><th>Group</th><th>Requests</th><th>Input tokens</th><th>Output tokens</th><th>Cache read / write</th><th>Known cost</th><th>Unreported</th></tr></thead>
+									<tbody>
+										for _, g := range data.Groups {
+											<tr><th scope="row">{ g.Key }</th><td>{ number(g.Requests) }</td><td>{ number(g.InputTokens) }</td><td>{ number(g.OutputTokens) }</td><td>{ number(g.CacheReadTokens) } / { number(g.CacheWriteTokens) }</td><td>{ dollars(g.CostUSD) }</td><td>{ number(g.Unreported) }</td></tr>
+										}
+									</tbody>
+								</table>
+							</div>
+						}
+					</section>
+				} else {
+					<section class="panel">
+						<h2>Recent requests</h2>
+						if len(data.Requests) == 0 {
+							<p class="empty">No requests match these filters.</p>
+						} else {
+							<div class="table-scroll" tabindex="0" role="region" aria-label="Recent usage records">
+								<table>
+									<thead><tr><th>Time / request</th><th>Alias</th><th>Upstream / model</th><th>Status</th><th>Attempts</th><th>Duration</th><th>Input / output tokens</th><th>Cache read / write</th><th>Cost / source</th><th>Transfer</th></tr></thead>
+									<tbody>
+										for _, r := range data.Requests {
+											<tr><td>{ timestamp(r.Timestamp) }<small><code>{ r.RequestID }</code></small></td><td>{ r.Alias }</td><td>{ r.Upstream }<small>{ r.UpstreamModel }</small></td><td>{ integer(r.Status) }</td><td>{ integer(r.Attempts) }</td><td>{ number(r.TotalMS) } ms</td><td>{ tokenCount(r.InputTokens) } / { tokenCount(r.OutputTokens) }</td><td>{ tokenCount(r.CacheReadTokens) } / { tokenCount(r.CacheWriteTokens) }</td><td>{ costLabel(r.CostUSD, r.CostSource) }<small>{ r.CostSource }</small></td><td>{ number(r.Bytes) } bytes<small>{ streamLabel(r.Streamed) }</small></td></tr>
+										}
+									</tbody>
+								</table>
+							</div>
+						}
+					</section>
+				}
+			}
+		}
+	</section>
+}

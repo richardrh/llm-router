@@ -31,6 +31,18 @@ func (m *SessionManager) Run(ctx context.Context, key, model, firstPrompt, nextP
 
 func (m *SessionManager) CloseAll() { m.closeAll() }
 
+// SessionCounts reports only aggregate capacity; it exposes no conversation IDs.
+func (m *SessionManager) SessionCounts() (live, limit int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if !session.isClosed() {
+			live++
+		}
+	}
+	return live, m.maxSessions
+}
+
 func RunCommand(ctx context.Context, argv []string, onText func(string) error) (Run, error) {
 	return runCLICommand(ctx, argv, onText)
 }

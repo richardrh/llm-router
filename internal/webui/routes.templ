@@ -1,0 +1,33 @@
+package webui
+
+templ Routes(status Status) {
+	<section id="routes">
+		<div class="page-heading"><div><p class="eyebrow">Configuration</p><h1>Routes</h1></div><p class="muted">Read-only routing snapshot</p></div>
+		if len(status.Aliases) == 0 {
+			<p class="empty panel">No aliases configured.</p>
+		}
+		for _, a := range status.Aliases {
+			<section class="panel">
+				<h2>{ a.Name }</h2>
+				<dl class="facts"><div><dt>Protocol</dt><dd>{ a.Protocol }</dd></div><div><dt>Context window</dt><dd>{ tokenLimit(a.ContextWindow) }</dd></div><div><dt>Advertised output budget</dt><dd>{ tokenLimit(a.MaxOutputTokens) }</dd></div><div><dt>Sticky routing</dt><dd>{ enabledLabel(a.Sticky) }</dd></div></dl>
+				if a.HasCLI {
+					<p class="notice">Includes a CLI-backed target. Playground execution requires acknowledgement.</p>
+				}
+				if a.ClientTools {
+					<p class="muted">Client tools: playground uses a non-streaming request and never executes returned tool calls.</p>
+				}
+				<div class="table-scroll" tabindex="0" role="region" aria-label={ "Targets for " + a.Name }>
+					<table>
+						<thead><tr><th>Upstream</th><th>Model</th><th>Protocol</th><th>Weight</th></tr></thead>
+						<tbody>
+							for _, t := range a.Targets {
+								<tr><td>{ t.Upstream }</td><td><code>{ t.Model }</code></td><td>{ t.Protocol }</td><td>{ weightLabel(t.Weight) }</td></tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			</section>
+		}
+		@UpstreamTable(status)
+	</section>
+}

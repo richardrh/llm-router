@@ -1,0 +1,50 @@
+package webui
+
+templ Overview(status Status, usage UsageData) {
+	<section id="overview" hx-get="/ui/overview" hx-trigger="every 5s" hx-swap="outerHTML">
+		<div class="page-heading"><div><p class="eyebrow">Operations</p><h1>Overview</h1></div><p class="muted">Snapshot { timestamp(status.At) } · refreshes every 5s</p></div>
+		<div class="metrics">
+			@Metric("Upstreams", integer(len(status.Upstreams)))
+			@Metric("Aliases", integer(len(status.Aliases)))
+			if usage.Enabled && usage.Error == "" {
+				@Metric("Recorded requests", number(usage.Totals.Requests))
+				@Metric("Known cost", dollars(usage.Totals.CostUSD))
+			}
+		</div>
+		if !status.UsageEnabled {
+			<p class="notice">Usage recording is disabled.</p>
+		}
+		if usage.Error != "" {
+			<p class="notice error" role="alert">Usage unavailable: { usage.Error }</p>
+		}
+		if usage.Enabled && usage.Error == "" {
+			<p class="muted">Reporting window: { usage.Since } to { usage.Until } (blank end means now). Input / output tokens: { number(usage.Totals.InputTokens) } / { number(usage.Totals.OutputTokens) }. Cache read / write: { number(usage.Totals.CacheReadTokens) } / { number(usage.Totals.CacheWriteTokens) }. Unreported requests: { number(usage.Totals.Unreported) }; unknown usage and costs are excluded, not zero. Dropped records: { number(int64(usage.Dropped)) }. Pruned rows: { number(int64(usage.Store.Pruned)) }. Retained rows: { number(usage.Store.Rows) }. Known costs combine reported costs and configured-rate estimates. Totals cover retained records only; pruning and drops make totals incomplete.</p>
+		}
+		@UpstreamTable(status)
+	</section>
+}
+
+templ Metric(label, value string) {
+	<div class="metric"><span>{ label }</span><strong>{ value }</strong></div>
+}
+
+templ UpstreamTable(status Status) {
+	<section class="panel">
+		<h2>Upstreams</h2>
+		if len(status.Upstreams) == 0 {
+			<p class="empty">No upstreams configured.</p>
+		} else {
+			<div class="table-scroll" tabindex="0" role="region" aria-label="Upstream state">
+				<table>
+					<thead><tr><th>Name</th><th>Kind / mode</th><th>State</th><th>In flight / limit</th><th>Sessions / limit</th><th>Cooldown until</th><th>Tools</th></tr></thead>
+					<tbody>
+						for _, u := range status.Upstreams {
+							<tr><th scope="row">{ u.Name }</th><td>{ u.Kind } / { u.Mode }</td><td><span class="badge">{ u.State }</span></td><td>{ integer(u.InFlight) } / { integer(u.Concurrency) }</td><td>{ sessionsLabel(u) }</td><td>{ timestamp(u.CooldownUntil) }</td><td>{ u.ToolMode }</td></tr>
+						}
+					</tbody>
+				</table>
+			</div>
+			<p class="muted">State is reported by the router; it is not a synthetic health check. Session counts apply only to upstreams with a session pool.</p>
+		}
+	</section>
+}

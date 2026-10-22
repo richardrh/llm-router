@@ -1,0 +1,72 @@
+package webui
+
+templ Playground(view PlayView) {
+	<section id="playground">
+		<div class="page-heading"><div><p class="eyebrow">Inference</p><h1>Playground</h1></div><form method="post" action="/ui/playground/new" hx-post="/ui/playground/new" hx-target="#playground" hx-swap="outerHTML"><input type="hidden" name="csrf" value={ view.CSRF }/><input type="hidden" name="conversation_id" value={ view.ConversationID }/><button class="quiet" type="submit">New conversation</button></form></div>
+		<p class="muted">Requests use configured routes. Responses are plain text. Returned tool calls are never executed by this console.</p>
+		if view.IsRunning() {
+			<div class="running"><p role="status">Running…</p><form method="post" action="/ui/playground/stop" hx-post="/ui/playground/stop" hx-target="#playground" hx-swap="outerHTML"><input type="hidden" name="csrf" value={ view.CSRF }/><input type="hidden" name="conversation_id" value={ view.ConversationID }/><button class="quiet" type="submit">Stop generation</button></form></div>
+			<div hx-ext="sse" sse-connect={ view.StreamURL } sse-close="done" hx-get="/ui/playground" hx-trigger="sse:done" hx-target="#playground" hx-swap="outerHTML">
+				<div id="conversation" sse-swap="history" hx-target="this" hx-swap="innerHTML">
+					@Conversation(view)
+				</div>
+			</div>
+		} else {
+			<div id="conversation">
+				@Conversation(view)
+			</div>
+		}
+		<form class="panel stack" method="post" action="/ui/playground/send" hx-post="/ui/playground/send" hx-target="#playground" hx-swap="outerHTML">
+			<input type="hidden" name="csrf" value={ view.CSRF }/><input type="hidden" name="conversation_id" value={ view.ConversationID }/>
+			<label for="alias">Route alias</label>
+			if len(view.Messages) > 0 || !view.CanSend() {
+				<input id="alias" value={ view.Alias } readonly/><input type="hidden" name="alias" value={ view.Alias }/>
+				<p class="muted">The alias is fixed for this conversation. Start a new conversation to change it.</p>
+			} else {
+				<select id="alias" name="alias" required>
+					<option value="">Select an alias</option>
+					for _, a := range view.Aliases {
+						<option value={ a.Name } selected?={ a.Name == view.Alias } disabled?={ !supportedAlias(a) }>{ aliasLabel(a) }</option>
+					}
+				</select>
+			}
+			if cliAliases(view.Aliases) {
+				<label class="notice checkbox"><input type="checkbox" name="acknowledge_cli" value="on" disabled?={ !view.CanSend() }/>I understand CLI-backed routes can execute configured agent tools and access the router host. I authorize this request if routed to a CLI target.</label>
+			}
+			<label for="prompt">Message</label><textarea id="prompt" name="prompt" rows="5" required disabled?={ !view.CanSend() }></textarea><button type="submit" disabled?={ !view.CanSend() || len(view.Aliases) == 0 }>Send message</button>
+		</form>
+	</section>
+}
+
+templ Conversation(view PlayView) {
+	<section class="panel transcript" aria-label="Conversation" aria-live="polite">
+		if len(view.Messages) == 0 {
+			<p class="empty">No messages yet. Select an alias and send a message to begin.</p>
+		}
+		for _, m := range view.HistoryMessages() {
+			@PlayMessage(m)
+		}
+		<div id="active-turn" sse-swap="active" hx-target="this" hx-swap="innerHTML">
+			@ActiveTurn(view)
+		</div>
+	</section>
+}
+
+templ PlayMessage(m MessageView) {
+	<article class="message"><h2>{ m.Role }</h2><pre>{ m.Text }</pre></article>
+}
+
+templ ActiveTurn(view PlayView) {
+	if view.Upstream != "" {
+		<p class="muted">Route: <code>{ view.Upstream }</code> / <code>{ view.UpstreamModel }</code></p>
+	}
+	for _, m := range view.ActiveMessages() {
+		@PlayMessage(m)
+	}
+	if view.Error != "" {
+		<p class="notice error" role="alert">{ view.Error }</p>
+	}
+	if view.AwaitingTools() {
+		<p class="notice" role="status">Awaiting tools. The response contains tool calls for an external harness; this console does not execute them. Start a new conversation to continue here.</p>
+	}
+}

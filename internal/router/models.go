@@ -182,6 +182,14 @@ func (s *Server) handleModelGroupInfo(w http.ResponseWriter, r *http.Request) {
 			info.SupportsAdaptiveThinking = facts.Supports(flagAdaptiveThinking)
 			info.SupportedReasoningEfforts = supportedEfforts(facts)
 		}
+		// Capabilities must describe the adapter as well as the model. Codex
+		// exposes client-owned function tools but currently accepts text only.
+		for _, target := range alias.Targets {
+			if upstream, ok := s.cfg.Upstreams[target.Upstream]; ok && upstream.KindValue() == UpstreamCodex {
+				info.SupportsFunctionCalling = true
+				info.SupportsVision = false
+			}
+		}
 		entries = append(entries, map[string]any{
 			"model_name": name,
 			"model_info": info,

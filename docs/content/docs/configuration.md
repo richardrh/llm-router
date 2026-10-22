@@ -3,6 +3,8 @@ title: Configuration
 weight: 5
 ---
 
+# Configuration
+
 `router.yaml` is the whole config, commented and ready to run. The keys worth
 knowing:
 
@@ -10,16 +12,18 @@ knowing:
 | --- | --- |
 | `listen` | Bind address. Loopback by default. |
 | `apiKey` | Shared secret clients must present. `""` accepts any. |
+| `ui.enabled` | Enable the embedded console at `/ui/`. Requires a nonempty `apiKey`. |
+| `ui.secureCookies` | Use HTTPS cookies and origin checks behind a TLS-terminating proxy. Defaults to false. |
 | `defaults.*` | Retry budget, timeouts, sticky affinity, breaker thresholds. |
 | `store.path` | SQLite file for usage history. Empty keeps no history. |
 | `store.queueSize` | Records waiting to be written before they are dropped. |
 | `store.maxRows` | Records kept, oldest deleted first. `0` keeps everything. |
 | `upstreams.<name>.baseUrl` | Provider root; the protocol's path is appended. |
 | `upstreams.<name>.apiKeyEnv` | Env var holding the key. Preferred over `apiKey`. |
-| `upstreams.<name>.kind` | `http` (the default) or `cli`. |
-| `upstreams.<name>.mode` | `one-shot` (default) or `persistent` for a long-lived Claude Code session. |
-| `upstreams.<name>.toolMode` | `claude` (default) or `client`; `client` returns harness tool calls and requires non-streaming requests. |
-| `upstreams.<name>.command` | argv for a `cli` upstream; one-shot commands contain `{prompt}`, persistent commands may contain `{model}`. |
+| `upstreams.<name>.kind` | `http` (default), `cli` for Claude Code, or `codex` for ChatGPT subscription access. |
+| `upstreams.<name>.mode` | Claude Code: `one-shot` (default) or `persistent`. Codex is always persistent. |
+| `upstreams.<name>.toolMode` | Claude Code: `claude` or non-streaming `client`. Codex uses streaming-capable native client tools. |
+| `upstreams.<name>.command` | Claude one-shot uses `{prompt}`; persistent may use `{model}`. Codex defaults to `codex app-server --listen stdio://` without placeholders. |
 | `upstreams.<name>.cwd` | Working directory for a CLI process; Claude Code discovers project configuration here. |
 | `upstreams.<name>.timeout` | Bounds one CLI turn. Defaults to `maxStreamDuration`. |
 | `upstreams.<name>.maxSessions` | Maximum live persistent CLI processes. Defaults to `maxConcurrency`. |
