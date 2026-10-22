@@ -1,0 +1,10 @@
+apiKey: gateway-e2e-key
+upstreams:
+  fixture:
+    baseUrl: "{{URL}}/v1"
+    authStyle: anthropic
+    apiKey: config-literal-secret
+models:
+  private-model:
+    api: openai-completions
+    targets: [{upstream: fixture, api: anthropic-messages, model: private-native-model, weight: 1}]

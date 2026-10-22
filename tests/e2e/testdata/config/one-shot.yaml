@@ -1,0 +1,10 @@
+apiKey: gateway-e2e-key
+upstreams:
+  fixture:
+    kind: cli
+    command: ["{{COMMAND}}", '{prompt}']
+    timeout: 30s
+models:
+  private-model:
+    api: openai-completions
+    targets: [{upstream: fixture, weight: 1}]

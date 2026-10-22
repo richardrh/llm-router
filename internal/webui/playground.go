@@ -171,6 +171,14 @@ func (h *Handler) playSend(r *http.Request, s *browserSession) {
 		reject("Inference is unavailable.")
 		return
 	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return
+	}
+	h.workers.Add(1)
+	h.mu.Unlock()
+
 	c.alias = alias
 	c.history = append(c.history, inference.Message{Role: "user", Content: prompt})
 	c.activeStart = len(c.messages)
@@ -187,6 +195,7 @@ func (h *Handler) playSend(r *http.Request, s *browserSession) {
 }
 
 func (h *Handler) runPlayground(ctx context.Context, s *browserSession, c *conversation, turn uint64, req inference.Request) {
+	defer h.workers.Done()
 	emit := func(event inference.Event) error {
 		s.mu.Lock()
 		defer s.mu.Unlock()

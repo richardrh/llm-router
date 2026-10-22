@@ -22,7 +22,11 @@ type Handler struct {
 	stop     chan struct{}
 	done     chan struct{}
 	closed   bool
-	assets   http.Handler
+	// Worker registration and the closed flag share mu, so Close can wait
+	// without racing a new Add, including work from discarded conversations.
+	workers   sync.WaitGroup
+	closeOnce sync.Once
+	assets    http.Handler
 }
 
 func New(deps Dependencies) *Handler {

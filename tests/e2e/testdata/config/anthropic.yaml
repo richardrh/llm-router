@@ -1,0 +1,11 @@
+apiKey: gateway-e2e-key
+upstreams:
+  fixture:
+    baseUrl: "{{URL}}/v1"
+    authStyle: anthropic
+    apiKey: config-literal-secret
+    headers: {anthropic-version: '2023-06-01', x-private-provider-option: enabled}
+models:
+  private-model:
+    api: anthropic-messages
+    targets: [{upstream: fixture, weight: 1}]

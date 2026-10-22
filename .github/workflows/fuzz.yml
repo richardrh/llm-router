@@ -1,0 +1,68 @@
+name: Scheduled fuzz exploration
+on:
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: config
+            target: FuzzConfigDecode
+          - package: wire
+            target: FuzzWireSupportedMessages
+          - package: inference
+            target: FuzzSSEFraming
+          - package: usage
+            target: FuzzUsageChunking
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - id: paths
+        run: echo "cache=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.paths.outputs.cache }}
+          key: fuzz-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod') }}-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod') }}-${{ matrix.target }}-
+      - name: Explore one target
+        id: explore
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./internal/${{ matrix.package }} -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=10m -fuzzminimizetime=30s -parallel=2 -timeout=15m 2>&1 | tee "$RUNNER_TEMP/fuzz.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scheduled-fuzz-${{ matrix.package }}
+          path: |
+            internal/${{ matrix.package }}/testdata/fuzz/
+            ${{ steps.paths.outputs.cache }}
+            ${{ runner.temp }}/fuzz.log
+          if-no-files-found: warn
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ${{ steps.paths.outputs.cache }}
+          key: fuzz-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod') }}-${{ matrix.target }}-${{ github.run_id }}
+      - name: Report exploration failure
+        if: failure() && steps.explore.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Scheduled fuzz failure: ${{ matrix.target }}',
+              body: 'The native fuzz exploration command failed; this can be a build, timeout, or discovered-input failure. Inspect the log and available corpus artifacts first. If a failing corpus input was produced, replay with `go test ./internal/${{ matrix.package }} -run=${{ matrix.target }}/<corpus-hash>`. Run: ' + context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId
+            });

@@ -24,3 +24,8 @@
 # Hugo build output
 docs/public/
 docs/.hugo_build.lock
+
+# Test-only browser dependencies and failure artifacts
+/tests/browser/node_modules/
+/tests/browser/test-results/
+/tests/browser/playwright-report/

@@ -1,0 +1,12 @@
+listen: 127.0.0.1:0
+apiKey: gateway-e2e-key
+upstreams:
+  fixture:
+    baseUrl: "{{URL}}/v1"
+    apiKey: config-literal-secret
+models:
+  private-model:
+    api: openai-completions
+    contextWindow: 123456
+    maxOutputTokens: 4321
+    targets: [{upstream: fixture, weight: 1}]

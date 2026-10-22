@@ -1,0 +1,12 @@
+apiKey: gateway-e2e-key
+upstreams:
+  fixture:
+    kind: codex
+    command: ["{{COMMAND}}"]
+    timeout: 30s
+    maxConcurrency: 2
+    maxSessions: 2
+models:
+  private-model:
+    api: openai-completions
+    targets: [{upstream: fixture, weight: 1}]

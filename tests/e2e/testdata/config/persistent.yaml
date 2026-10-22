@@ -1,0 +1,13 @@
+apiKey: gateway-e2e-key
+upstreams:
+  fixture:
+    kind: cli
+    mode: persistent
+    toolMode: client
+    command: ["{{COMMAND}}", '{model}']
+    sessionIdleTimeout: 2m
+    maxSessions: 2
+models:
+  private-model:
+    api: openai-completions
+    targets: [{upstream: fixture, weight: 1}]

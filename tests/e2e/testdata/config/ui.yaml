@@ -1,0 +1,9 @@
+apiKey: gateway-e2e-key
+ui: {enabled: true, secureCookies: false}
+upstreams:
+  fixture:
+    baseUrl: "{{URL}}/v1"
+models:
+  private-model:
+    api: openai-completions
+    targets: [{upstream: fixture, weight: 1}]
